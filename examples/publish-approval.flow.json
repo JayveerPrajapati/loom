@@ -1,0 +1,80 @@
+{
+  "id": "publish-approval",
+  "name": "Publish with approval",
+  "version": 1,
+  "settings": {},
+  "nodes": [
+    {
+      "id": "start",
+      "type": "trigger.manual",
+      "typeVersion": 1,
+      "name": "Start",
+      "position": { "x": 0, "y": 0 },
+      "config": {}
+    },
+    {
+      "id": "draft",
+      "type": "http.request",
+      "typeVersion": 1,
+      "name": "Create draft",
+      "position": { "x": 220, "y": 0 },
+      "config": {
+        "method": "POST",
+        "url": "https://api.example.com/posts",
+        "body": { "title": "{{ $json.title }}" }
+      },
+      "credentials": { "http": "cred_http" }
+    },
+    {
+      "id": "approve",
+      "type": "flow.approval",
+      "typeVersion": 1,
+      "name": "Approve publication",
+      "position": { "x": 440, "y": 0 },
+      "config": {
+        "channel": "#content",
+        "message": "Publish {{ $json.title }}?"
+      }
+    },
+    {
+      "id": "publish",
+      "type": "http.request",
+      "typeVersion": 1,
+      "name": "Publish post",
+      "position": { "x": 660, "y": -80 },
+      "config": {
+        "method": "POST",
+        "url": "https://api.example.com/posts/{{ $json.id }}/publish"
+      },
+      "credentials": { "http": "cred_http" }
+    },
+    {
+      "id": "compose",
+      "type": "code.run",
+      "typeVersion": 1,
+      "name": "Compose rejection",
+      "position": { "x": 660, "y": 80 },
+      "config": {
+        "language": "javascript",
+        "outputType": "message",
+        "source": "return { text: 'Publication rejected: ' + ($json.title || 'untitled') };"
+      }
+    },
+    {
+      "id": "notify",
+      "type": "chat.slack",
+      "typeVersion": 1,
+      "name": "Notify author",
+      "position": { "x": 880, "y": 80 },
+      "config": { "channel": "#content", "text": "{{ $json.text }}" },
+      "credentials": { "slack": "cred_slack" }
+    }
+  ],
+  "edges": [
+    { "from": { "node": "start", "port": "main" }, "to": { "node": "draft", "port": "main" } },
+    { "from": { "node": "draft", "port": "main" }, "to": { "node": "approve", "port": "main" } },
+    { "from": { "node": "approve", "port": "approved" }, "to": { "node": "publish", "port": "main" } },
+    { "from": { "node": "approve", "port": "rejected" }, "to": { "node": "compose", "port": "main" } },
+    { "from": { "node": "compose", "port": "main" }, "to": { "node": "notify", "port": "main" } }
+  ]
+}

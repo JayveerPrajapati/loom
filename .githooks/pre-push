@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+echo "pre-push: go test -race ./..."
+go test -race ./...
+
+if [ -d web/node_modules ]; then
+  (cd web && npm run typecheck)
+fi
+
+echo "pre-push checks passed (run 'make check' and 'make e2e' for the full gate)"

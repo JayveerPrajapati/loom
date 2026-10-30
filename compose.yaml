@@ -1,0 +1,17 @@
+services:
+  loom:
+    build:
+      context: .
+      args:
+        VERSION: local
+    image: loom:local
+    ports:
+      - "5678:5678"
+    volumes:
+      - loom-data:/data
+    environment:
+      LOOM_TOKEN: ${LOOM_TOKEN:-}
+    restart: unless-stopped
+
+volumes:
+  loom-data:

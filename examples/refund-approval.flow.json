@@ -1,0 +1,104 @@
+{
+  "id": "refund-approval",
+  "name": "Refund approval",
+  "version": 1,
+  "settings": {},
+  "nodes": [
+    {
+      "id": "hook",
+      "type": "trigger.webhook",
+      "typeVersion": 1,
+      "name": "Refund requested",
+      "position": { "x": 0, "y": 0 },
+      "config": { "path": "refund", "method": "POST" }
+    },
+    {
+      "id": "lookup",
+      "type": "http.request",
+      "typeVersion": 1,
+      "name": "Lookup order",
+      "position": { "x": 220, "y": 0 },
+      "config": {
+        "method": "GET",
+        "url": "https://api.example.com/orders/{{ $json.orderId }}"
+      },
+      "credentials": { "http": "cred_http" }
+    },
+    {
+      "id": "check",
+      "type": "flow.if",
+      "typeVersion": 1,
+      "name": "Amount over 100?",
+      "position": { "x": 440, "y": 0 },
+      "config": { "condition": "{{ $json.amount > 100 }}" }
+    },
+    {
+      "id": "approve",
+      "type": "flow.approval",
+      "typeVersion": 1,
+      "name": "Ask for approval",
+      "position": { "x": 660, "y": -90 },
+      "config": {
+        "channel": "#refunds",
+        "message": "Refund {{ $json.orderId }} for {{ $json.amount }}?"
+      }
+    },
+    {
+      "id": "refund",
+      "type": "http.request",
+      "typeVersion": 1,
+      "name": "Process refund",
+      "position": { "x": 880, "y": -90 },
+      "config": {
+        "method": "POST",
+        "url": "https://api.example.com/refunds"
+      },
+      "credentials": { "http": "cred_http" }
+    },
+    {
+      "id": "audit",
+      "type": "http.request",
+      "typeVersion": 1,
+      "name": "Record refund",
+      "position": { "x": 1100, "y": -90 },
+      "config": {
+        "method": "POST",
+        "url": "https://api.example.com/audit"
+      },
+      "credentials": { "http": "cred_http" }
+    },
+    {
+      "id": "ticket-low",
+      "type": "http.request",
+      "typeVersion": 1,
+      "name": "Open low-value ticket",
+      "position": { "x": 660, "y": 90 },
+      "config": {
+        "method": "POST",
+        "url": "https://api.example.com/tickets"
+      },
+      "credentials": { "http": "cred_http" }
+    },
+    {
+      "id": "ticket-reject",
+      "type": "http.request",
+      "typeVersion": 1,
+      "name": "Open rejected ticket",
+      "position": { "x": 880, "y": 90 },
+      "config": {
+        "method": "POST",
+        "url": "https://api.example.com/tickets"
+      },
+      "credentials": { "http": "cred_http" }
+    }
+  ],
+  "edges": [
+    { "from": { "node": "hook", "port": "main" }, "to": { "node": "lookup", "port": "main" } },
+    { "from": { "node": "lookup", "port": "main" }, "to": { "node": "check", "port": "main" } },
+    { "from": { "node": "check", "port": "true" }, "to": { "node": "approve", "port": "main" } },
+    { "from": { "node": "check", "port": "false" }, "to": { "node": "ticket-low", "port": "main" } },
+    { "from": { "node": "approve", "port": "approved" }, "to": { "node": "refund", "port": "main" } },
+    { "from": { "node": "approve", "port": "rejected" }, "to": { "node": "ticket-reject", "port": "main" } },
+    { "from": { "node": "refund", "port": "main" }, "to": { "node": "audit", "port": "main" } }
+  ]
+}

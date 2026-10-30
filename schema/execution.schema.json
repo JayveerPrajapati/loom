@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loom.dev/schema/execution.schema.json",
+  "title": "Loom Execution Log",
+  "description": "A run plus its append-only event stream. Replay is defined over this document.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run", "events"],
+  "properties": {
+    "run": { "$ref": "#/$defs/run" },
+    "events": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/event" }
+    }
+  },
+  "$defs": {
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "workflowId", "workflowVersion", "status", "trigger", "startedAt"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "workflowId": { "type": "string", "minLength": 1 },
+        "workflowVersion": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Content hash of the exact workflow document that ran."
+        },
+        "templateVersion": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Published template version used by a job run."
+        },
+        "jobId": {
+          "type": "string",
+          "description": "Job that started this run, when applicable."
+        },
+        "parentRunId": {
+          "type": "string",
+          "description": "Parent run for a subflow execution."
+        },
+        "parentNodeId": {
+          "type": "string",
+          "description": "Subflow node in the parent run that started this run."
+        },
+        "resumeNode": {
+          "type": "string",
+          "description": "Node at which a waiting run is suspended."
+        },
+        "resumeToken": {
+          "type": "string",
+          "description": "Token used to resume a waiting run."
+        },
+        "status": {
+          "enum": ["queued", "running", "waiting", "done", "failed", "cancelled"]
+        },
+        "trigger": {
+          "enum": ["manual", "webhook", "cron", "once", "job", "batch", "subflow", "replay"]
+        },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "finishedAt": { "type": "string", "format": "date-time" },
+        "error": { "type": "string" }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "type", "at"],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Monotonic per run, gap-free."
+        },
+        "type": {
+          "enum": [
+            "run.started",
+            "node.started",
+            "node.finished",
+            "node.failed",
+            "node.retried",
+            "run.waiting",
+            "run.resumed",
+            "run.finished",
+            "run.failed",
+            "run.cancelled"
+          ]
+        },
+        "at": { "type": "string", "format": "date-time" },
+        "nodeId": { "type": "string" },
+        "inputHash": {
+          "type": "string",
+          "description": "Content hash of the exact input handed to the node."
+        },
+        "outputHash": {
+          "type": "string",
+          "description": "Content hash of the exact output produced by the node."
+        },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "error": { "type": "string" },
+        "data": {
+          "type": "object",
+          "description": "Small metadata. Sensitive HTTP headers are redacted; bodies are not automatically redacted. Large payloads live in the blob store."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,89 @@
+{
+  "id": "crm-sync",
+  "name": "CRM contact sync",
+  "version": 1,
+  "settings": {},
+  "nodes": [
+    {
+      "id": "hook",
+      "type": "trigger.webhook",
+      "typeVersion": 1,
+      "name": "Contact submitted",
+      "position": { "x": 0, "y": 0 },
+      "config": { "path": "crm", "method": "POST" }
+    },
+    {
+      "id": "normalize",
+      "type": "data.set",
+      "typeVersion": 1,
+      "name": "Normalize fields",
+      "position": { "x": 220, "y": 0 },
+      "config": {
+        "values": { "email": "{{ $json.email }}", "source": "crm" },
+        "keepOnlySet": true
+      }
+    },
+    {
+      "id": "push",
+      "type": "http.request",
+      "typeVersion": 1,
+      "name": "Push to CRM",
+      "position": { "x": 440, "y": 0 },
+      "config": {
+        "method": "POST",
+        "url": "https://api.example.com/contacts",
+        "body": { "email": "{{ $json.email }}" }
+      },
+      "credentials": { "http": "cred_http" }
+    },
+    {
+      "id": "check",
+      "type": "flow.if",
+      "typeVersion": 1,
+      "name": "Accepted?",
+      "position": { "x": 660, "y": 0 },
+      "config": { "condition": "{{ $json.ok }}" }
+    },
+    {
+      "id": "record",
+      "type": "http.request",
+      "typeVersion": 1,
+      "name": "Record sync",
+      "position": { "x": 880, "y": -80 },
+      "config": {
+        "method": "POST",
+        "url": "https://api.example.com/audit"
+      },
+      "credentials": { "http": "cred_http" }
+    },
+    {
+      "id": "compose",
+      "type": "code.run",
+      "typeVersion": 1,
+      "name": "Compose alert",
+      "position": { "x": 880, "y": 80 },
+      "config": {
+        "language": "javascript",
+        "outputType": "message",
+        "source": "return { text: 'CRM rejected contact ' + ($json.email || 'unknown') };"
+      }
+    },
+    {
+      "id": "alert",
+      "type": "chat.slack",
+      "typeVersion": 1,
+      "name": "Alert the team",
+      "position": { "x": 1100, "y": 80 },
+      "config": { "channel": "#crm", "text": "{{ $json.text }}" },
+      "credentials": { "slack": "cred_slack" }
+    }
+  ],
+  "edges": [
+    { "from": { "node": "hook", "port": "main" }, "to": { "node": "normalize", "port": "main" } },
+    { "from": { "node": "normalize", "port": "main" }, "to": { "node": "push", "port": "main" } },
+    { "from": { "node": "push", "port": "main" }, "to": { "node": "check", "port": "main" } },
+    { "from": { "node": "check", "port": "true" }, "to": { "node": "record", "port": "main" } },
+    { "from": { "node": "check", "port": "false" }, "to": { "node": "compose", "port": "main" } },
+    { "from": { "node": "compose", "port": "main" }, "to": { "node": "alert", "port": "main" } }
+  ]
+}

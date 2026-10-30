@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+staged_go=$(git diff --cached --name-only --diff-filter=ACMR -- '*.go')
+if [ -n "$staged_go" ]; then
+  unformatted=$(gofmt -l $staged_go)
+  if [ -n "$unformatted" ]; then
+    echo "gofmt needed for:"
+    echo "$unformatted"
+    echo "Run 'make fmt' and re-stage."
+    exit 1
+  fi
+  go vet ./...
+fi
+
+if [ -d web/node_modules ] && git diff --cached --name-only --diff-filter=ACMR -- 'web/**/*.ts' 'web/**/*.tsx' | grep -q .; then
+  (cd web && npm run typecheck)
+fi

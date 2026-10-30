@@ -1,0 +1,69 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build editor
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+      - name: Format
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Staticcheck
+        uses: dominikh/staticcheck-action@v1
+        with:
+          version: "latest"
+          install-go: false
+      - name: Vulnerability scan
+        uses: golang/govulncheck-action@v1
+      - name: Test (race)
+        run: make test-race
+      - name: Engine coverage
+        run: make coverage
+      - name: All-package coverage
+        run: make coverage-all
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: coverage.out
+      - name: Performance budget
+        run: make perf
+      - name: Build
+        run: go build -o bin/loom ./cmd/loom
+      - name: Install Playwright browser
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - name: Editor end-to-end tests
+        working-directory: web
+        run: npm run e2e:only
+        env:
+          CI: "true"
+      - name: Validate examples
+        run: ./bin/loom validate examples/*.json
+      - name: Run examples (simulated)
+        run: |
+          for f in examples/*.json; do
+            ./bin/loom test --data "$RUNNER_TEMP/loom-ci" "$f"
+          done

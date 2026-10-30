@@ -1,0 +1,54 @@
+{
+  "id": "daily-digest",
+  "name": "Daily news digest",
+  "version": 1,
+  "settings": {},
+  "nodes": [
+    {
+      "id": "schedule",
+      "type": "trigger.cron",
+      "typeVersion": 1,
+      "name": "Every morning",
+      "position": { "x": 0, "y": 0 },
+      "config": { "schedule": "0 8 * * *", "timezone": "UTC" }
+    },
+    {
+      "id": "news",
+      "type": "http.request",
+      "typeVersion": 1,
+      "name": "Fetch headlines",
+      "position": { "x": 220, "y": 0 },
+      "config": {
+        "method": "GET",
+        "url": "https://news.example.com/api/headlines"
+      },
+      "credentials": { "http": "cred_http" }
+    },
+    {
+      "id": "summarize",
+      "type": "code.run",
+      "typeVersion": 1,
+      "name": "Write the digest",
+      "position": { "x": 440, "y": 0 },
+      "config": {
+        "language": "javascript",
+        "outputType": "message",
+        "source": "const headline = $json.title || 'No news today'; return { text: 'Daily digest: ' + headline };"
+      }
+    },
+    {
+      "id": "post",
+      "type": "chat.slack",
+      "typeVersion": 1,
+      "name": "Post to Slack",
+      "position": { "x": 660, "y": 0 },
+      "config": { "channel": "#digest", "text": "{{ $json.text }}" },
+      "credentials": { "slack": "cred_slack" }
+    }
+  ],
+  "edges": [
+    { "from": { "node": "schedule", "port": "main" }, "to": { "node": "news", "port": "main" } },
+    { "from": { "node": "news", "port": "main" }, "to": { "node": "summarize", "port": "main" } },
+    { "from": { "node": "summarize", "port": "main" }, "to": { "node": "post", "port": "main" } }
+  ]
+}

@@ -1,0 +1,13 @@
+.git
+.github
+.kern
+.loom
+.e2e-data
+bin
+data
+coverage.out
+loom
+web/node_modules
+web/dist
+web/test-results
+web/playwright-report

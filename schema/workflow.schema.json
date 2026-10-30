@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loom.dev/schema/workflow.schema.json",
+  "title": "Loom Workflow",
+  "description": "A versioned DAG of typed nodes. The same document is the editor file, the API payload and the test fixture.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "version", "nodes", "edges"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "Stable, URL-safe workflow identifier."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "settings": {
+      "type": "object",
+      "description": "Workflow settings, including values exposed to expressions as $vars.<name>.",
+      "properties": {
+        "variables": {
+          "type": "object",
+          "description": "Workflow-scoped values available to expressions as $vars.<name>.",
+          "additionalProperties": true
+        },
+        "timezone": { "type": "string" },
+        "concurrency": { "type": "integer", "minimum": 1 },
+        "retention": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/node" }
+    },
+    "edges": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/edge" }
+    }
+  },
+  "$defs": {
+    "position": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "typeVersion", "name", "position", "config"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": { "type": "string", "minLength": 1 },
+        "typeVersion": { "type": "integer", "minimum": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "position": { "$ref": "#/$defs/position" },
+        "config": {
+          "type": "object",
+          "description": "Node-specific configuration, validated against the node definition."
+        },
+        "credentials": {
+          "type": "object",
+          "description": "Credential type to credential id. Secrets never live in the workflow.",
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        },
+        "retry": { "$ref": "#/$defs/retry" },
+        "onError": {
+          "type": "string",
+          "enum": ["stop", "continue", "branch"],
+          "description": "stop fails the run; continue emits an error item on main; branch emits it on the error output."
+        },
+        "batch": { "$ref": "#/$defs/batch" }
+      }
+    },
+    "retry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxAttempts": { "type": "integer", "minimum": 0, "maximum": 20 },
+        "backoffMs": { "type": "integer", "minimum": 0, "maximum": 600000 },
+        "maxDelayMs": { "type": "integer", "minimum": 0, "maximum": 3600000 }
+      }
+    },
+    "batch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "itemsPath": { "type": "string" },
+        "continueOnItemError": { "type": "boolean" }
+      }
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "port"],
+      "properties": {
+        "node": { "type": "string", "minLength": 1 },
+        "port": { "type": "string", "minLength": 1 }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to"],
+      "properties": {
+        "from": { "$ref": "#/$defs/endpoint" },
+        "to": { "$ref": "#/$defs/endpoint" }
+      }
+    }
+  }
+}

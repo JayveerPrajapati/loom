@@ -1,0 +1,54 @@
+{
+  "id": "postgres-report",
+  "name": "Six-hour order report",
+  "version": 1,
+  "settings": {},
+  "nodes": [
+    {
+      "id": "schedule",
+      "type": "trigger.cron",
+      "typeVersion": 1,
+      "name": "Every six hours",
+      "position": { "x": 0, "y": 0 },
+      "config": { "schedule": "0 */6 * * *", "timezone": "UTC" }
+    },
+    {
+      "id": "query",
+      "type": "db.postgres",
+      "typeVersion": 1,
+      "name": "Recent orders",
+      "position": { "x": 220, "y": 0 },
+      "config": {
+        "operation": "query",
+        "query": "select id, total, created_at from orders where created_at > now() - interval '6 hours'"
+      },
+      "credentials": { "postgres": "cred_postgres" }
+    },
+    {
+      "id": "compose",
+      "type": "code.run",
+      "typeVersion": 1,
+      "name": "Compose message",
+      "position": { "x": 440, "y": 0 },
+      "config": {
+        "language": "javascript",
+        "outputType": "message",
+        "source": "const rows = $json.rows || []; return { text: rows.length + ' new orders in the last 6 hours' };"
+      }
+    },
+    {
+      "id": "post",
+      "type": "chat.slack",
+      "typeVersion": 1,
+      "name": "Post to ops",
+      "position": { "x": 660, "y": 0 },
+      "config": { "channel": "#ops", "text": "{{ $json.text }}" },
+      "credentials": { "slack": "cred_slack" }
+    }
+  ],
+  "edges": [
+    { "from": { "node": "schedule", "port": "main" }, "to": { "node": "query", "port": "main" } },
+    { "from": { "node": "query", "port": "main" }, "to": { "node": "compose", "port": "main" } },
+    { "from": { "node": "compose", "port": "main" }, "to": { "node": "post", "port": "main" } }
+  ]
+}

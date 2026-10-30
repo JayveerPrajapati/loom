@@ -1,0 +1,23 @@
+.loom-node.has-error {
+  border-color: #c0392b;
+  box-shadow: 0 0 0 2px rgba(192, 57, 43, 0.16);
+}
+
+.react-flow__edge.edge-invalid .react-flow__edge-path {
+  stroke: #c0392b !important;
+  stroke-width: 2.2;
+}
+
+.react-flow__edge.edge-invalid .react-flow__arrowhead polyline {
+  stroke: #c0392b;
+  fill: #c0392b;
+}
+
+.react-flow__edge.edge-active .react-flow__edge-path {
+  stroke-width: 2.4;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 35%, transparent));
+}
+
+.react-flow__edge.edge-active .react-flow__edge-text {
+  font-weight: 700;
+}

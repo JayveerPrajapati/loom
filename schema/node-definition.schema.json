@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loom.dev/schema/node-definition.schema.json",
+  "title": "Loom Node Definition",
+  "description": "The contract a connector or built-in node declares to the compiler.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "typeVersion",
+    "category",
+    "inputs",
+    "outputs",
+    "inputType",
+    "outputType",
+    "config"
+  ],
+  "properties": {
+    "type": { "type": "string", "minLength": 1 },
+    "typeVersion": { "type": "integer", "minimum": 1 },
+    "category": { "enum": ["trigger", "logic", "action", "ai"] },
+    "description": { "type": "string" },
+    "inputs": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "outputs": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "inputType": { "$ref": "#/$defs/portType" },
+    "outputType": { "$ref": "#/$defs/portType" },
+    "outputTypeKey": {
+      "type": "string",
+      "description": "Config field that overrides outputType (for code and transform nodes)."
+    },
+    "credentials": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "optionalCredentials": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Credentials offered by the editor whose absence is valid."
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/field" }
+    }
+  },
+  "$defs": {
+    "portType": {
+      "enum": ["any", "json", "text", "event", "order", "message", "rows"]
+    },
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["string", "number", "boolean", "array", "object"] },
+        "required": { "type": "boolean" },
+        "enum": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}
