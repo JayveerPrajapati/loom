@@ -2,7 +2,10 @@
 bin/
 .loom/
 data/
-.kern/
+.kern/*
+!.kern/verify-suppressions.json
+.cortexkit/
+.densic/
 *.db
 *.db-wal
 *.db-shm
@@ -11,8 +14,12 @@ node_modules/
 coverage*.out
 web/test-results/
 web/playwright-report/
+web/e2e-artifacts/
 web/dist/*
 !web/dist/.keep
 .DS_Store
 .idea/
 .vscode/
+
+# GoReleaser snapshot output
+dist/

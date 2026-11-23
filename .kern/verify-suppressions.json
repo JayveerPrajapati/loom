@@ -1,0 +1,33 @@
+{
+  "suppressions": [
+    {
+      "file": "web/e2e/auth.ts",
+      "rule": "hardcoded-secret",
+      "label": "PASSWORD",
+      "reason": "Login fixture: playwright.config.ts generates the value per run and exports it through the environment. The literal here is the JSON field name required by the API, not a credential."
+    },
+    {
+      "file": "web/src/components/AdminPanel.tsx",
+      "rule": "hardcoded-secret",
+      "label": "PASSWORD",
+      "reason": "User-creation request field: the value is React form state entered by an authenticated admin, not a literal secret. The property name is required by the API."
+    },
+    {
+      "file": "web/src/components/CredentialsPage.tsx",
+      "rule": "hardcoded-secret",
+      "label": "TOKEN",
+      "reason": "Insert-example template for the credentials form: the value is the placeholder 'paste-your-token' shown to the operator, not a credential."
+    },
+    {
+      "file": "web/src/components/CredentialsPage.tsx",
+      "rule": "hardcoded-secret",
+      "label": "PASSWORD",
+      "reason": "Insert-example template for the credentials form: the value is the placeholder 'paste-password' shown to the operator, not a credential."
+    },
+    {
+      "file": "internal/host/live.go",
+      "rule": "unsafe-http",
+      "reason": "The HTTP request node exists to call operator-authored URLs in --live mode. Requests go through blockedHost plus a resolve-once dialer that rejects private targets, --sim remains the default, and live mode is explicit."
+    }
+  ]
+}
