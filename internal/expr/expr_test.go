@@ -161,6 +161,7 @@ func TestEvalValueCanceledContext(t *testing.T) {
 
 func TestEvalEnvAndNow(t *testing.T) {
 	t.Setenv("TEST_LOOM_VAR", "loom_val_123")
+	t.Setenv("LOOM_EXPR_ENV_ALLOW", "TEST_LOOM_VAR")
 	rendered := expr.Render(`prefix_{{ $env.TEST_LOOM_VAR }}_suffix`, flow.Item{})
 	if rendered != "prefix_loom_val_123_suffix" {
 		t.Fatalf("rendered env = %q, want prefix_loom_val_123_suffix", rendered)
@@ -169,5 +170,31 @@ func TestEvalEnvAndNow(t *testing.T) {
 	renderedNow := expr.Render(`{{ $now.length > 10 }}`, flow.Item{})
 	if renderedNow != "true" {
 		t.Fatalf("rendered now = %q, want true", renderedNow)
+	}
+}
+
+func TestEvalEnvDefaultDenyHidesSecrets(t *testing.T) {
+	t.Setenv("LOOM_SECRET", "kernel-key")
+	t.Setenv("TEST_PUBLIC", "public-value")
+
+	t.Setenv("LOOM_EXPR_ENV_ALLOW", "")
+	if got := expr.Render(`{{ $env.LOOM_SECRET }}`, flow.Item{}); got != "" {
+		t.Fatalf("default $env leaked LOOM_SECRET = %q", got)
+	}
+	if got := expr.Render(`{{ $env.TEST_PUBLIC }}`, flow.Item{}); got != "" {
+		t.Fatalf("default $env exposed TEST_PUBLIC = %q", got)
+	}
+
+	t.Setenv("LOOM_EXPR_ENV_ALLOW", "LOOM_SECRET,TEST_PUBLIC")
+	if got := expr.Render(`{{ $env.LOOM_SECRET }}`, flow.Item{}); got != "" {
+		t.Fatalf("allow-list re-admitted LOOM_SECRET = %q", got)
+	}
+	if got := expr.Render(`{{ $env.TEST_PUBLIC }}`, flow.Item{}); got != "public-value" {
+		t.Fatalf("allow-listed TEST_PUBLIC = %q, want public-value", got)
+	}
+
+	t.Setenv("LOOM_EXPR_ENV_ALLOW", "TEST_*")
+	if got := expr.Render(`{{ $env.TEST_PUBLIC }}`, flow.Item{}); got != "public-value" {
+		t.Fatalf("prefix allow-list TEST_PUBLIC = %q", got)
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -114,6 +116,64 @@ func TestRunAndReplay(t *testing.T) {
 	}
 	if from.Status != "done" {
 		t.Fatalf("from replay status = %q", from.Status)
+	}
+}
+
+func TestReplayStepExecuteWithInputOverride(t *testing.T) {
+	eng := newEngine(t)
+	ctx := context.Background()
+
+	res, err := eng.Start(ctx, linearWorkflow(), engine.Options{
+		Trigger: "manual", Input: flow.Item{"name": "loom"},
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if res.Status != "done" {
+		t.Fatalf("status = %q (%s)", res.Status, res.Error)
+	}
+
+	// Re-run the set node live with an edited input. The recorded output
+	// used name=loom, so the override (name=edited) must diverge.
+	step, err := eng.Replay(ctx, res.RunID, "set", engine.ReplayStepExecute, &flow.Item{"name": "edited"})
+	if err != nil {
+		t.Fatalf("step-execute with override: %v", err)
+	}
+	if step.Status != "done" {
+		t.Fatalf("step-execute override status = %q", step.Status)
+	}
+	if step.Match {
+		t.Fatal("an edited input must diverge from the recorded output")
+	}
+}
+
+func TestReplayFromWithInputOverride(t *testing.T) {
+	eng := newEngine(t)
+	ctx := context.Background()
+
+	res, err := eng.Start(ctx, linearWorkflow(), engine.Options{
+		Trigger: "manual", Input: flow.Item{"name": "loom"},
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if res.Status != "done" {
+		t.Fatalf("status = %q (%s)", res.Status, res.Error)
+	}
+
+	from, err := eng.Replay(ctx, res.RunID, "set", engine.ReplayFrom, &flow.Item{"name": "edited"})
+	if err != nil {
+		t.Fatalf("from replay with override: %v", err)
+	}
+	if from.Status != "done" {
+		t.Fatalf("from replay status = %q", from.Status)
+	}
+	if got := from.Outputs["set"]["main"]["greeting"]; got != "hi edited" {
+		t.Fatalf("greeting = %v, want hi edited (override must replace the merged input)", got)
+	}
+	// The original run's outputs stay untouched: the replay is a child run.
+	if got := res.Outputs["set"]["main"]["greeting"]; got != "hi loom" {
+		t.Fatalf("original run greeting = %v, want hi loom", got)
 	}
 }
 
@@ -828,6 +888,435 @@ func TestApprovalSurvivesRestart(t *testing.T) {
 	}
 }
 
+func TestApprovalDoubleSubmitResumesOnce(t *testing.T) {
+	eng := newEngine(t)
+	res, err := eng.Start(context.Background(), approvalWorkflow(), engine.Options{Trigger: "manual"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if res.Status != "waiting" {
+		t.Fatalf("status = %q, want waiting", res.Status)
+	}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	successes := 0
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			if _, err := eng.Resume(context.Background(), res.RunID, "approved"); err == nil {
+				mu.Lock()
+				successes++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if successes != 1 {
+		t.Fatalf("successful resumes = %d, want 1", successes)
+	}
+
+	events, err := eng.Store.ListEvents(res.RunID)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	resumed := 0
+	for _, ev := range events {
+		if ev.Type == "run.resumed" {
+			resumed++
+		}
+	}
+	if resumed != 1 {
+		t.Fatalf("run.resumed events = %d, want 1", resumed)
+	}
+}
+
+func TestResumeDecisionReasonAndActor(t *testing.T) {
+	eng := newEngine(t)
+	ctx := context.Background()
+	res, err := eng.Start(ctx, approvalWorkflow(), engine.Options{Trigger: "manual"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if res.Status != "waiting" {
+		t.Fatalf("status = %q, want waiting", res.Status)
+	}
+
+	for _, note := range []string{"", "   "} {
+		if _, err := eng.ResumeAs(ctx, res.RunID, "rejected", "ada@example.com", note); !errors.Is(err, engine.ErrRejectionReasonRequired) {
+			t.Fatalf("reject with %q: err = %v, want ErrRejectionReasonRequired", note, err)
+		}
+	}
+	if _, err := eng.ResumeAs(ctx, res.RunID, "rejected", "ada@example.com", "ok"); !errors.Is(err, engine.ErrRejectionReasonTooShort) {
+		t.Fatalf("short note: err = %v, want ErrRejectionReasonTooShort", err)
+	}
+	long := strings.Repeat("x", 501)
+	if _, err := eng.ResumeAs(ctx, res.RunID, "rejected", "ada@example.com", long); !errors.Is(err, engine.ErrRejectionReasonTooLong) {
+		t.Fatalf("long note: err = %v, want ErrRejectionReasonTooLong", err)
+	}
+
+	if _, err := eng.ResumeAs(ctx, res.RunID, "rejected", "ada@example.com", "  budget cut  "); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+
+	events, err := eng.Store.ListEvents(res.RunID)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var resumed bool
+	for _, ev := range events {
+		if ev.Type != "run.resumed" {
+			continue
+		}
+		resumed = true
+		data := ev.Data
+		if data["decision"] != "rejected" {
+			t.Fatalf("decision = %v, want rejected", data["decision"])
+		}
+		if data["note"] != "budget cut" {
+			t.Fatalf("note = %q, want trimmed", data["note"])
+		}
+		if data["actor"] != "ada@example.com" {
+			t.Fatalf("actor = %v, want the deciding principal", data["actor"])
+		}
+		if _, ok := data["decidedAt"].(string); !ok {
+			t.Fatalf("decidedAt missing from %v", data)
+		}
+		if ev.Actor != "ada@example.com" {
+			t.Fatalf("event actor = %q", ev.Actor)
+		}
+	}
+	if !resumed {
+		t.Fatal("run.resumed event missing")
+	}
+}
+
+func TestApprovalTimeoutAutoDecides(t *testing.T) {
+	eng := newEngine(t)
+	wf := approvalWorkflow()
+	for i := range wf.Nodes {
+		if wf.Nodes[i].ID == "approve" {
+			wf.Nodes[i].Config["timeoutSeconds"] = 0.05
+			wf.Nodes[i].Config["onTimeout"] = "rejected"
+		}
+	}
+	wf.Nodes = append(wf.Nodes, graph.Node{
+		ID: "no", Type: "data.set", TypeVersion: 1, Name: "No",
+		Config: map[string]any{"values": map[string]any{"ok": false}},
+	})
+	wf.Edges = append(wf.Edges, graph.Edge{
+		From: graph.Endpoint{Node: "approve", Port: "rejected"},
+		To:   graph.Endpoint{Node: "no", Port: "main"},
+	})
+
+	res, err := eng.Start(context.Background(), wf, engine.Options{Trigger: "manual"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if res.Status != "waiting" {
+		t.Fatalf("status = %q, want waiting", res.Status)
+	}
+	run, err := eng.Store.GetRun(res.RunID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.ResumeExpiresAt == nil {
+		t.Fatal("approval link has no expiry")
+	}
+	if run.ResumeRequestedAt == nil {
+		t.Fatal("approval has no requestedAt for age display")
+	}
+
+	time.Sleep(120 * time.Millisecond)
+	out, err := eng.ResumeTimer(context.Background(), res.RunID)
+	if err != nil {
+		t.Fatalf("timer resume: %v", err)
+	}
+	if out.Status != "done" {
+		t.Fatalf("status = %q (%s), want done", out.Status, out.Error)
+	}
+	if got, _ := out.Outputs["no"]["main"]["ok"].(bool); got != false {
+		t.Fatalf("rejected branch output = %v", out.Outputs["no"])
+	}
+	decisions, err := eng.Store.DecisionsForRun(res.RunID)
+	if err != nil {
+		t.Fatalf("decisions: %v", err)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("decisions = %d, want 1", len(decisions))
+	}
+	d := decisions[0]
+	if d.Decision != "rejected" || d.Source != "timeout" || d.ActorLabel != "system:timeout" {
+		t.Fatalf("decision = %+v", d)
+	}
+	if !strings.Contains(d.Note, "Timed out") {
+		t.Fatalf("note = %q, want a timeout reason", d.Note)
+	}
+}
+
+func TestApprovalReminderSweepSendsOnce(t *testing.T) {
+	eng := newEngine(t)
+	wf := approvalWorkflow()
+	for i := range wf.Nodes {
+		if wf.Nodes[i].ID == "approve" {
+			wf.Nodes[i].Config["reminderMinutes"] = 0.001 // ~60ms
+		}
+	}
+	res, err := eng.Start(context.Background(), wf, engine.Options{Trigger: "manual"})
+	if err != nil || res.Status != "waiting" {
+		t.Fatalf("start = %v, %v", res, err)
+	}
+	time.Sleep(80 * time.Millisecond)
+	if n := eng.SweepApprovalReminders(context.Background()); n != 1 {
+		t.Fatalf("first sweep = %d, want 1", n)
+	}
+	if n := eng.SweepApprovalReminders(context.Background()); n != 0 {
+		t.Fatalf("second sweep = %d, want 0 (already reminded)", n)
+	}
+	events, err := eng.Store.ListEvents(res.RunID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	reminded := 0
+	for _, ev := range events {
+		if ev.Type == "approval.reminded" {
+			reminded++
+		}
+	}
+	if reminded != 1 {
+		t.Fatalf("approval.reminded events = %d, want 1", reminded)
+	}
+}
+
+func TestReplayRejectsMissingOrCorruptedBlobs(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	eng := engine.New(st, host.NewSim())
+
+	res, err := eng.Start(context.Background(), linearWorkflow(), engine.Options{
+		Trigger: "manual", Input: flow.Item{"name": "loom"},
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	corrupted := false
+	err = filepath.Walk(filepath.Join(dir, "blobs"), func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil || info.IsDir() || corrupted {
+			return nil
+		}
+		if err := os.WriteFile(path, []byte(`{"tampered":true}`), 0o600); err == nil {
+			corrupted = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk blobs: %v", err)
+	}
+	if !corrupted {
+		t.Fatal("no blob to corrupt")
+	}
+	if _, err := eng.Replay(context.Background(), res.RunID, "", engine.ReplayFull); err == nil {
+		t.Fatal("replay accepted a corrupted blob")
+	}
+
+	if err := os.RemoveAll(filepath.Join(dir, "blobs")); err != nil {
+		t.Fatalf("remove blobs: %v", err)
+	}
+	if _, err := eng.Replay(context.Background(), res.RunID, "", engine.ReplayFull); err == nil {
+		t.Fatal("replay accepted missing blobs")
+	}
+}
+
+func TestReplayStepExecuteApproval(t *testing.T) {
+	eng := newEngine(t)
+	res, err := eng.Start(context.Background(), approvalWorkflow(), engine.Options{Trigger: "manual"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if res.Status != "waiting" {
+		t.Fatalf("status = %q", res.Status)
+	}
+	if _, err := eng.Resume(context.Background(), res.RunID, "approved"); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	live, err := eng.Replay(context.Background(), res.RunID, "approve", engine.ReplayStepExecute)
+	if err != nil {
+		t.Fatalf("execute replay: %v", err)
+	}
+	if !live.Match || live.Status != "waiting" {
+		t.Fatalf("approval execute replay match=%v status=%q", live.Match, live.Status)
+	}
+}
+
+func TestReplayRejectsBadNodeIDs(t *testing.T) {
+	eng := newEngine(t)
+	res, err := eng.Start(context.Background(), linearWorkflow(), engine.Options{
+		Trigger: "manual", Input: flow.Item{"name": "loom"},
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if _, err := eng.Replay(context.Background(), res.RunID, "", engine.ReplayStep); err == nil {
+		t.Fatal("step replay without a node id succeeded")
+	}
+	if _, err := eng.Replay(context.Background(), res.RunID, "", engine.ReplayFrom); err == nil {
+		t.Fatal("from replay without a node id succeeded")
+	}
+	if _, err := eng.Replay(context.Background(), res.RunID, "missing", engine.ReplayStep); err == nil {
+		t.Fatal("step replay of an unknown node succeeded")
+	}
+}
+
+func TestDisplaySurfacesRedactRawBlobs(t *testing.T) {
+	eng := newEngine(t)
+	wf := &graph.Workflow{
+		ID: "redact", Name: "Redact", Version: 1,
+		Nodes: []graph.Node{
+			{ID: "start", Type: "trigger.manual", TypeVersion: 1, Name: "Start"},
+			{ID: "set", Type: "data.set", TypeVersion: 1, Name: "Set",
+				Config: map[string]any{
+					"values": map[string]any{"password": "hunter2", "author": "Ada"},
+				},
+			},
+			{ID: "http", Type: "http.request", TypeVersion: 1, Name: "HTTP",
+				Config: map[string]any{
+					"method": "GET", "url": "https://example.com/x",
+					"headers": map[string]any{"Authorization": "Bearer token", "X-Trace": "t"},
+				},
+				Credentials: map[string]string{"http": "cred"},
+			},
+		},
+		Edges: []graph.Edge{
+			{From: graph.Endpoint{Node: "start", Port: "main"}, To: graph.Endpoint{Node: "set", Port: "main"}},
+			{From: graph.Endpoint{Node: "set", Port: "main"}, To: graph.Endpoint{Node: "http", Port: "main"}},
+		},
+	}
+	res, err := eng.Start(context.Background(), wf, engine.Options{
+		Trigger: "manual", Input: flow.Item{"password": "hunter2"},
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	dc, err := eng.DataContext(res.RunID, "http")
+	if err != nil {
+		t.Fatalf("data context: %v", err)
+	}
+	nodes := map[string]engine.NodeData{}
+	for _, node := range dc.Nodes {
+		nodes[node.NodeID] = node
+	}
+	setNode := nodes["set"]
+	if setNode.Outputs["main"]["password"] != "[redacted]" {
+		t.Fatalf("data context leaked password: %#v", setNode.Outputs)
+	}
+	if setNode.Outputs["main"]["author"] != "Ada" {
+		t.Fatalf("data context over-redacted author: %#v", setNode.Outputs)
+	}
+	values, _ := setNode.Config["values"].(map[string]any)
+	if values["password"] != "[redacted]" || values["author"] != "Ada" {
+		t.Fatalf("data context config = %#v", setNode.Config)
+	}
+
+	httpNode := nodes["http"]
+	headers, _ := httpNode.Config["headers"].(map[string]any)
+	if headers["Authorization"] != "[redacted]" || headers["X-Trace"] != "t" {
+		t.Fatalf("data context http config = %#v", httpNode.Config)
+	}
+	if httpNode.Credentials["http"] != "cred" {
+		t.Fatalf("data context credentials = %#v", httpNode.Credentials)
+	}
+
+	preview, err := eng.Preview(res.RunID, "set", "{{ $json.password }}")
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if preview != "[redacted]" {
+		t.Fatalf("preview leaked password: %q", preview)
+	}
+}
+
+type countingHTTPHost struct {
+	*host.Sim
+	mu    sync.Mutex
+	calls int
+}
+
+func (h *countingHTTPHost) HTTP(ctx context.Context, req flow.HTTPRequest) (flow.HTTPResponse, error) {
+	h.mu.Lock()
+	h.calls++
+	h.mu.Unlock()
+	return h.Sim.HTTP(ctx, req)
+}
+
+func (h *countingHTTPHost) count() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.calls
+}
+
+func TestReplayStepDoesNotExecuteHost(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	h := &countingHTTPHost{Sim: host.NewSim()}
+	eng := engine.New(st, h)
+
+	wf := &graph.Workflow{
+		ID: "count", Name: "Count", Version: 1,
+		Nodes: []graph.Node{
+			{ID: "start", Type: "trigger.manual", TypeVersion: 1, Name: "Start", Config: map[string]any{}},
+			{ID: "http", Type: "http.request", TypeVersion: 1, Name: "HTTP", Config: map[string]any{
+				"method": "GET", "url": "https://api.example.com/orders/A-1",
+			}},
+		},
+		Edges: []graph.Edge{
+			{From: graph.Endpoint{Node: "start", Port: "main"}, To: graph.Endpoint{Node: "http", Port: "main"}},
+		},
+	}
+	res, err := eng.Start(context.Background(), wf, engine.Options{Trigger: "manual"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if res.Status != "done" {
+		t.Fatalf("status = %q (%s)", res.Status, res.Error)
+	}
+	before := h.count()
+	if before == 0 {
+		t.Fatal("original run did not call the host")
+	}
+
+	step, err := eng.Replay(context.Background(), res.RunID, "http", engine.ReplayStep)
+	if err != nil {
+		t.Fatalf("verify replay: %v", err)
+	}
+	if !step.Match {
+		t.Fatalf("verify replay mismatch: recorded=%s actual=%s", step.RecordedHash, step.ActualHash)
+	}
+	if got := h.count(); got != before {
+		t.Fatalf("verify-only replay called the host: %d -> %d", before, got)
+	}
+
+	live, err := eng.Replay(context.Background(), res.RunID, "http", engine.ReplayStepExecute)
+	if err != nil {
+		t.Fatalf("execute replay: %v", err)
+	}
+	if !live.Match {
+		t.Fatalf("execute replay mismatch: recorded=%s actual=%s", live.RecordedHash, live.ActualHash)
+	}
+	if got := h.count(); got != before+1 {
+		t.Fatalf("step-execute host calls = %d, want %d", got, before+1)
+	}
+}
+
 type flakyHost struct {
 	flow.Host
 	mu       sync.Mutex
@@ -1206,8 +1695,14 @@ func TestMergeInputs(t *testing.T) {
 		t.Fatalf("status = %q (%s)", res.Status, res.Error)
 	}
 	got := res.Outputs["merge"]["main"]
-	if got["a"] != 1 || got["b"] != 2 {
-		t.Fatalf("merged item = %#v", got)
+	items, ok := got["items"].([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("append merged item = %#v, want two items", got)
+	}
+	head, _ := items[0].(map[string]any)
+	tail, _ := items[1].(map[string]any)
+	if head["a"] != 1 || tail["b"] != 2 {
+		t.Fatalf("append items = %#v, want a=1 then b=2", items)
 	}
 }
 
@@ -1272,15 +1767,29 @@ func TestApprovalRejected(t *testing.T) {
 	if res.Status != "waiting" {
 		t.Fatalf("status = %q", res.Status)
 	}
-	resumed, err := eng.Resume(context.Background(), res.RunID, "rejected")
+	if _, err := eng.Resume(context.Background(), res.RunID, "rejected"); err == nil {
+		t.Fatal("rejecting without a reason should fail")
+	}
+	if run, err := eng.Store.GetRun(res.RunID); err != nil || run.Status != "waiting" {
+		t.Fatalf("run after a refused rejection = %v (err=%v), want waiting", run, err)
+	}
+	resumed, err := eng.ResumeAs(context.Background(), res.RunID, "rejected", "tester", "amount over budget")
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	if resumed.Status != "done" {
 		t.Fatalf("status = %q (%s)", resumed.Status, resumed.Error)
 	}
-	if got := resumed.Outputs["approve"]["rejected"]["approved"]; got != false {
+	rejected := resumed.Outputs["approve"]["rejected"]
+	if got := rejected["approved"]; got != false {
 		t.Fatalf("approved = %v, want false", got)
+	}
+	approval, ok := rejected["approval"].(map[string]any)
+	if !ok {
+		t.Fatalf("approval = %#v, want an object", rejected["approval"])
+	}
+	if approval["decision"] != "rejected" || approval["note"] != "amount over budget" || approval["actor"] != "tester" {
+		t.Fatalf("approval = %#v", approval)
 	}
 }
 
@@ -1476,4 +1985,188 @@ func TestEngineHelpers(t *testing.T) {
 	}
 }
 
+// gatedHost parks Sleep calls longer than an hour until released, so a
+// flow.wait node can hold a concurrency slot open for as long as needed.
+type gatedHost struct {
+	flow.Host
+	release chan struct{}
+}
 
+func (h *gatedHost) Sleep(ctx context.Context, d time.Duration) error {
+	if d > time.Hour {
+		select {
+		case <-h.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return h.Host.Sleep(ctx, d)
+}
+
+func waitRunStatus(t *testing.T, st *store.Store, runID, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		run, err := st.GetRun(runID)
+		if err != nil {
+			t.Fatalf("get %s: %v", runID, err)
+		}
+		if run.Status == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("run %s stuck at %s, want %s", runID, run.Status, want)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func waitingWorkflow(id string) *graph.Workflow {
+	return &graph.Workflow{
+		ID: id, Name: "Waiting " + id, Version: 1,
+		Nodes: []graph.Node{
+			{ID: "start", Type: "trigger.manual", TypeVersion: 1, Name: "Start", Config: map[string]any{}},
+			{ID: "hold", Type: "flow.wait", TypeVersion: 1, Name: "Hold", Config: map[string]any{"seconds": 7200.0}},
+		},
+		Edges: []graph.Edge{
+			{From: graph.Endpoint{Node: "start", Port: "main"}, To: graph.Endpoint{Node: "hold", Port: "main"}},
+		},
+	}
+}
+
+// TestMaxParallelRunsQueuesOverflow: with a workflow capped at one parallel
+// run, the first run executes while the second parks as queued; cancelling
+// the parked run finishes it directly, and releasing the slot admits a third
+// run through the dequeue path.
+func TestMaxParallelRunsQueuesOverflow(t *testing.T) {
+	blocked := &gatedHost{Host: host.NewSim(), release: make(chan struct{})}
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	eng := engine.New(st, blocked)
+
+	wf := waitingWorkflow("queue-wf")
+	wf.Settings = map[string]any{"maxParallelRuns": 1}
+	ctx := context.Background()
+
+	first, err := eng.StartAsync(ctx, wf, engine.Options{Trigger: "manual", Input: flow.Item{"n": 1}})
+	if err != nil {
+		t.Fatalf("start first: %v", err)
+	}
+	second, err := eng.StartAsync(ctx, wf, engine.Options{Trigger: "manual", Input: flow.Item{"n": 2}})
+	if err != nil {
+		t.Fatalf("start second: %v", err)
+	}
+	if run, _ := st.GetRun(first); run.Status != "running" {
+		t.Fatalf("first run = %s, want running", run.Status)
+	}
+	if run, _ := st.GetRun(second); run.Status != "queued" {
+		t.Fatalf("second run = %s, want queued (parked)", run.Status)
+	}
+
+	// Cancelling a parked run finishes it directly, without a goroutine.
+	if !eng.Cancel(second) {
+		t.Fatal("cancel parked run returned false")
+	}
+	waitRunStatus(t, st, second, "cancelled", 2*time.Second)
+
+	// Releasing the slot: the first run finishes and the queue drains.
+	third, err := eng.StartAsync(ctx, wf, engine.Options{Trigger: "manual", Input: flow.Item{"n": 3}})
+	if err != nil {
+		t.Fatalf("start third: %v", err)
+	}
+	if run, _ := st.GetRun(third); run.Status != "queued" {
+		t.Fatalf("third run = %s, want queued (parked)", run.Status)
+	}
+	close(blocked.release)
+	waitRunStatus(t, st, first, "done", 5*time.Second)
+	waitRunStatus(t, st, third, "done", 5*time.Second)
+
+	// The admitted run kept the trigger input it was started with.
+	events, err := st.ListEvents(third)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	foundHold := false
+	for _, ev := range events {
+		if ev.Type == "node.started" && ev.NodeID == "hold" {
+			foundHold = true
+		}
+	}
+	if !foundHold {
+		t.Fatal("admitted run never executed the wait node")
+	}
+}
+
+// sleepRecorder records every positive Sleep the engine requests.
+type sleepRecorder struct {
+	flow.Host
+	mu    sync.Mutex
+	slept []time.Duration
+}
+
+func (h *sleepRecorder) Sleep(ctx context.Context, d time.Duration) error {
+	if d > 0 {
+		h.mu.Lock()
+		h.slept = append(h.slept, d)
+		h.mu.Unlock()
+	}
+	return h.Host.Sleep(ctx, d)
+}
+
+func rateWorkflow(id string) *graph.Workflow {
+	return &graph.Workflow{
+		ID: id, Name: "Rate " + id, Version: 1,
+		Nodes: []graph.Node{
+			{ID: "start", Type: "trigger.manual", TypeVersion: 1, Name: "Start", Config: map[string]any{}},
+			{ID: "call", Type: "http.request", TypeVersion: 1, Name: "Call", Config: map[string]any{
+				"method": "GET", "url": "https://example.com", "rateLimitPerMinute": 1.0,
+			}},
+		},
+		Edges: []graph.Edge{
+			{From: graph.Endpoint{Node: "start", Port: "main"}, To: graph.Endpoint{Node: "call", Port: "main"}},
+		},
+	}
+}
+
+// TestNodeRateLimitSpacesCalls: with the node capped at one call per minute,
+// back-to-back runs of the same workflow must space their calls — only the
+// first executes immediately, the rest are told to wait.
+func TestNodeRateLimitSpacesCalls(t *testing.T) {
+	clock := newPhase2Clock()
+	rec := &phase2ClockHost{Host: host.NewSim(), clock: clock}
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	eng := engine.New(st, rec)
+	eng.Now = clock.Now
+
+	wf := rateWorkflow("rate-wf")
+	ctx := context.Background()
+	ids := make([]string, 0, 3)
+	for i := 0; i < 3; i += 1 {
+		id, err := eng.StartAsync(ctx, wf, engine.Options{Trigger: "manual"})
+		if err != nil {
+			t.Fatalf("start run %d: %v", i, err)
+		}
+		ids = append(ids, id)
+	}
+	for _, id := range ids {
+		waitRunStatus(t, st, id, "done", 5*time.Second)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.slept) < 2 {
+		t.Fatalf("rate limiter slept %d times, want at least 2", len(rec.slept))
+	}
+	for _, d := range rec.slept {
+		if d < 55*time.Second {
+			t.Fatalf("rate limit wait = %v, want at least 55s", d)
+		}
+	}
+}

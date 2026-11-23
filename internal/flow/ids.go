@@ -11,7 +11,9 @@ import (
 func NewID(prefix string) string {
 	var b [12]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return prefix + "-" + hex.EncodeToString([]byte("fallback"))
+		// A predictable identifier is worse than a crash: ids must not collide
+		// and never carry a known constant.
+		panic("flow: crypto/rand failed: " + err.Error())
 	}
 	return prefix + "-" + hex.EncodeToString(b[:])
 }
@@ -20,7 +22,9 @@ func NewID(prefix string) string {
 func NewToken() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "token-fallback"
+		// This token is an approval capability URL. Returning a known constant
+		// on RNG failure would let anyone decide waiting runs.
+		panic("flow: crypto/rand failed: " + err.Error())
 	}
 	return hex.EncodeToString(b[:])
 }

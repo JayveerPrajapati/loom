@@ -5,15 +5,14 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"strings"
-	"sync"
-	"time"
-
 	"loom/internal/engine"
 	"loom/internal/flow"
 	"loom/internal/graph"
 	"loom/internal/store"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
 )
 
 const (
@@ -73,12 +72,13 @@ func (s *api) startBatch(w http.ResponseWriter, r *http.Request) {
 	for i := range indices {
 		indices[i] = i
 	}
-	parent, err := s.createBatchRun(job, wf, items, indices, concurrency)
+	actor := actorFor(r)
+	parent, err := s.createBatchRun(job, wf, items, indices, concurrency, actor)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	go s.executeBatch(parent.ID, *job, wf, items, indices, concurrency)
+	go s.executeBatch(parent.ID, *job, wf, items, indices, concurrency, actor)
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"runId": parent.ID, "status": "queued", "jobId": job.ID,
 		"total": len(items), "concurrency": concurrency,
@@ -150,19 +150,20 @@ func (s *api) retryRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	concurrency := normalizeConcurrency(state.Concurrency)
-	parent, err := s.createBatchRun(job, wf, failed, failedIndices, concurrency)
+	actor := actorFor(r)
+	parent, err := s.createBatchRun(job, wf, failed, failedIndices, concurrency, actor)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	go s.executeBatch(parent.ID, *job, wf, failed, failedIndices, concurrency)
+	go s.executeBatch(parent.ID, *job, wf, failed, failedIndices, concurrency, actor)
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"runId": parent.ID, "status": "queued", "jobId": job.ID,
 		"total": len(failed), "concurrency": concurrency, "retryOf": run.ID,
 	})
 }
 
-func (s *api) createBatchRun(job *store.Job, wf *graph.Workflow, items []any, indices []int, concurrency int) (*store.Run, error) {
+func (s *api) createBatchRun(job *store.Job, wf *graph.Workflow, items []any, indices []int, concurrency int, actor string) (*store.Run, error) {
 	snapshot, err := json.Marshal(wf)
 	if err != nil {
 		return nil, err
@@ -175,7 +176,7 @@ func (s *api) createBatchRun(job *store.Job, wf *graph.Workflow, items []any, in
 	run := store.Run{
 		ID: flow.NewID("run"), WorkflowID: job.TemplateID, WorkflowVersion: versionHash,
 		TemplateVersion: job.TemplateVersion, JobID: job.ID, Status: "running",
-		Trigger: "batch", StartedAt: time.Now().UTC(), Snapshot: snapshot, ResumeData: state,
+		Trigger: "batch", StartedAt: time.Now().UTC(), Snapshot: snapshot, ResumeData: state, Actor: actor,
 	}
 	if err := s.deps.Store.CreateRun(run); err != nil {
 		return nil, err
@@ -195,7 +196,7 @@ func (s *api) workflowVersionHash(workflowID string, version int) string {
 	return fmt.Sprintf("template-v%d", version)
 }
 
-func (s *api) executeBatch(parentID string, job store.Job, wf *graph.Workflow, items []any, indices []int, concurrency int) {
+func (s *api) executeBatch(parentID string, job store.Job, wf *graph.Workflow, items []any, indices []int, concurrency int, actor string) {
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	for position, item := range items {
@@ -212,7 +213,7 @@ func (s *api) executeBatch(parentID string, job store.Job, wf *graph.Workflow, i
 				Trigger: "batch", Input: batchInput(job.InputDefaults, item),
 				Snapshot: wf, JobID: job.ID, TemplateVersion: job.TemplateVersion,
 				ParentRunID: parentID, ParentNodeID: fmt.Sprintf("batch:%d", index),
-				MaxConcurrency: jobConcurrency(job),
+				MaxConcurrency: jobConcurrency(job), Actor: actor,
 			}
 			_, _ = s.deps.Engine.Start(context.Background(), wf, opts)
 		}(original, item)
@@ -288,4 +289,66 @@ func batchItemIndex(nodeID string) (int, bool) {
 		return 0, false
 	}
 	return index, true
+}
+
+func (s *api) refreshBatchParent(parentID string) {
+	parent, err := s.deps.Store.GetRun(parentID)
+	if err != nil || parent.Trigger != "batch" || parent.Status == "cancelled" {
+		return
+	}
+	var state batchState
+	totalExpected := 0
+	if len(parent.ResumeData) > 0 {
+		if err := json.Unmarshal(parent.ResumeData, &state); err == nil {
+			totalExpected = len(state.Items)
+		}
+	}
+
+	children, err := s.deps.Store.ListChildRuns(parentID, maxBatchItems)
+	if err != nil {
+		return
+	}
+	total := len(children)
+	if totalExpected > total {
+		total = totalExpected
+	}
+	if total == 0 {
+		return
+	}
+
+	running, waiting, failed := 0, 0, 0
+	for _, child := range children {
+		switch child.Status {
+		case "queued", "running":
+			running++
+		case "waiting":
+			waiting++
+		case "failed":
+			failed++
+		}
+	}
+	if totalExpected > len(children) {
+		running += (totalExpected - len(children))
+	}
+	status := "done"
+	message := ""
+	var finished *time.Time
+	now := time.Now().UTC()
+	switch {
+	case running > 0:
+		status = "running"
+	case waiting > 0:
+		status = "waiting"
+		message = fmt.Sprintf("%d of %d items are waiting for approval", waiting, total)
+	case failed > 0:
+		status = "failed"
+		message = fmt.Sprintf("%d of %d items failed", failed, total)
+		finished = &now
+	default:
+		finished = &now
+	}
+	if status == parent.Status && message == parent.Error {
+		return
+	}
+	_ = s.deps.Store.UpdateRunStatus(parentID, status, message, finished)
 }

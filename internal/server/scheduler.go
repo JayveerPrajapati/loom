@@ -151,7 +151,14 @@ func (s *Scheduler) addWorkflowCrons(scheduled map[string]bool) {
 func (s *Scheduler) runWorkflow(wf *graph.Workflow, trigger string) {
 	ctx, cancel := context.WithTimeout(s.ctx, 10*time.Minute)
 	defer cancel()
-	if _, err := s.engine.Start(ctx, wf, engine.Options{Trigger: trigger, Snapshot: wf}); err != nil {
+	// A workflow-level cron fires from the stored row, which may be a
+	// never-published sparse draft. Resolve it like a publish would.
+	runWF, err := workflowForRun(s.store, wf)
+	if err != nil {
+		log.Printf("scheduler: workflow %s: %v", wf.ID, err)
+		return
+	}
+	if _, err := s.engine.Start(ctx, runWF, engine.Options{Trigger: trigger, Snapshot: runWF, Actor: "system:scheduler"}); err != nil {
 		log.Printf("scheduler: workflow %s: %v", wf.ID, err)
 	}
 }
@@ -245,6 +252,7 @@ func (s *Scheduler) run(job store.Job, trigger string) error {
 		JobID:           job.ID,
 		TemplateVersion: job.TemplateVersion,
 		MaxConcurrency:  jobConcurrency(job),
+		Actor:           "system:scheduler",
 	})
 	return err
 }

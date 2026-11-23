@@ -2,18 +2,22 @@ package server_test
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"loom/internal/engine"
+	"loom/internal/flow"
 	"loom/internal/graph"
 	"loom/internal/host"
 	"loom/internal/server"
@@ -21,21 +25,28 @@ import (
 )
 
 func newTestServer(t *testing.T, token string) (*httptest.Server, *store.Store) {
+	srv, st, _ := newTestServerAt(t, token)
+	return srv, st
+}
+
+func newTestServerAt(t *testing.T, token string) (*httptest.Server, *store.Store, string) {
 	t.Helper()
-	st, err := store.Open(t.TempDir())
+	dir := t.TempDir()
+	st, err := store.Open(dir)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
 	srv := httptest.NewServer(server.Handler(server.Deps{
-		Version: "test",
-		Store:   st,
-		Engine:  engine.New(st, host.NewSim()),
-		Token:   token,
+		Version:        "test",
+		Store:          st,
+		Engine:         engine.New(st, host.NewSim()),
+		Token:          token,
+		AllowAnonymous: token == "",
 	}))
 	t.Cleanup(srv.Close)
-	return srv, st
+	return srv, st, dir
 }
 
 func call(t *testing.T, srv *httptest.Server, method, path, token string, body any) (int, []byte) {
@@ -219,6 +230,27 @@ func TestReplayEndpoints(t *testing.T) {
 	}
 
 	status, data = call(t, srv, http.MethodPost, "/api/runs/"+runID+"/replay", "", map[string]any{
+		"mode": "step", "nodeId": "set", "execute": true,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("step-execute status = %d: %s", status, data)
+	}
+	execReplay := decode(t, data)
+	if execReplay["mode"] != "step-execute" || execReplay["match"] != true {
+		t.Fatalf("step-execute replay = %s", data)
+	}
+	if status, data := call(t, srv, http.MethodPost, "/api/runs/"+runID+"/replay", "", map[string]any{
+		"mode": "step",
+	}); status != http.StatusBadRequest {
+		t.Fatalf("step without nodeId = %d: %s", status, data)
+	}
+	if status, data := call(t, srv, http.MethodPost, "/api/runs/"+runID+"/replay", "", map[string]any{
+		"mode": "nonsense",
+	}); status != http.StatusBadRequest {
+		t.Fatalf("bad replay mode = %d: %s", status, data)
+	}
+
+	status, data = call(t, srv, http.MethodPost, "/api/runs/"+runID+"/replay", "", map[string]any{
 		"mode": "from", "nodeId": "set",
 	})
 	if status != http.StatusOK {
@@ -270,6 +302,123 @@ func TestReplayEndpoints(t *testing.T) {
 	status, _ = call(t, srv, http.MethodPost, "/api/runs/missing/replay", "", map[string]any{"mode": "full"})
 	if status != http.StatusNotFound {
 		t.Fatalf("missing run status = %d, want 404", status)
+	}
+}
+
+func TestDiffRejectsTamperedEventChain(t *testing.T) {
+	srv, _, dir := newTestServerAt(t, "")
+
+	wf := linearWorkflow()
+	wf.ID = "diff-tamper"
+	if status, data := call(t, srv, http.MethodPost, "/api/workflows", "", wf); status != http.StatusCreated {
+		t.Fatalf("create = %d: %s", status, data)
+	}
+	startRun := func() string {
+		status, data := call(t, srv, http.MethodPost, "/api/workflows/diff-tamper/runs", "", map[string]any{
+			"input": map[string]any{"name": "loom"},
+		})
+		if status != http.StatusOK {
+			t.Fatalf("run = %d: %s", status, data)
+		}
+		id, _ := decode(t, data)["runId"].(string)
+		if id == "" {
+			t.Fatalf("missing runId: %s", data)
+		}
+		return id
+	}
+	base := startRun()
+	against := startRun()
+
+	if status, data := call(t, srv, http.MethodGet, "/api/runs/"+base+"/diff?against="+against, "", nil); status != http.StatusOK {
+		t.Fatalf("diff before tamper = %d: %s", status, data)
+	}
+
+	db, err := sql.Open("sqlite", filepath.Join(dir, "loom.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE events SET data = ? WHERE run_id = ? AND seq = 2`, `{"tampered":true}`, base); err != nil {
+		t.Fatalf("tamper: %v", err)
+	}
+
+	status, data := call(t, srv, http.MethodGet, "/api/runs/"+base+"/diff?against="+against, "", nil)
+	if status != http.StatusUnprocessableEntity {
+		t.Fatalf("diff status = %d, want 422: %s", status, data)
+	}
+	if !strings.Contains(string(data), "hash mismatch") {
+		t.Fatalf("diff error = %s", data)
+	}
+}
+
+func TestReplayRedactsOutputsAndShowsConfig(t *testing.T) {
+	srv, _ := newTestServer(t, "")
+
+	wf := &graph.Workflow{
+		ID: "redact-api", Name: "Redact", Version: 1,
+		Nodes: []graph.Node{
+			{ID: "start", Type: "trigger.manual", TypeVersion: 1, Name: "Start"},
+			{ID: "set", Type: "data.set", TypeVersion: 1, Name: "Set",
+				Config: map[string]any{
+					"values": map[string]any{"password": "hunter2", "author": "Ada"},
+				},
+			},
+			{ID: "http", Type: "http.request", TypeVersion: 1, Name: "HTTP",
+				Config: map[string]any{
+					"method": "GET", "url": "https://example.com/x",
+					"headers": map[string]any{"Authorization": "Bearer token", "X-Trace": "t"},
+				},
+				Credentials: map[string]string{"http": "cred"},
+			},
+		},
+		Edges: []graph.Edge{
+			{From: graph.Endpoint{Node: "start", Port: "main"}, To: graph.Endpoint{Node: "set", Port: "main"}},
+			{From: graph.Endpoint{Node: "set", Port: "main"}, To: graph.Endpoint{Node: "http", Port: "main"}},
+		},
+	}
+	if status, data := call(t, srv, http.MethodPost, "/api/workflows", "", wf); status != http.StatusCreated {
+		t.Fatalf("create = %d: %s", status, data)
+	}
+	status, data := call(t, srv, http.MethodPost, "/api/workflows/redact-api/runs", "", map[string]any{
+		"input": map[string]any{"password": "hunter2"},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("run = %d: %s", status, data)
+	}
+	runID, _ := decode(t, data)["runId"].(string)
+	if runID == "" {
+		t.Fatalf("missing runId: %s", data)
+	}
+
+	status, data = call(t, srv, http.MethodPost, "/api/runs/"+runID+"/replay", "", map[string]any{
+		"mode": "step", "nodeId": "http",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("step replay = %d: %s", status, data)
+	}
+	step := decode(t, data)
+	config, _ := step["config"].(map[string]any)
+	headers, _ := config["headers"].(map[string]any)
+	if headers["Authorization"] != "[redacted]" || headers["X-Trace"] != "t" {
+		t.Fatalf("replay config = %#v", config)
+	}
+	creds, _ := step["credentials"].(map[string]any)
+	if creds["http"] != "cred" {
+		t.Fatalf("replay credentials = %#v", creds)
+	}
+
+	status, data = call(t, srv, http.MethodPost, "/api/runs/"+runID+"/replay", "", map[string]any{
+		"mode": "full",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("full replay = %d: %s", status, data)
+	}
+	full := decode(t, data)
+	outputs, _ := full["outputs"].(map[string]any)
+	setOut, _ := outputs["set"].(map[string]any)
+	main, _ := setOut["main"].(map[string]any)
+	if main["password"] != "[redacted]" || main["author"] != "Ada" {
+		t.Fatalf("full replay outputs = %#v", main)
 	}
 }
 
@@ -410,6 +559,65 @@ func TestApprovalOverHTTP(t *testing.T) {
 	}
 	if got := decode(t, data)["status"]; got != "done" {
 		t.Fatalf("resumed status = %v", got)
+	}
+}
+
+func TestApprovalDoubleSubmitOverHTTP(t *testing.T) {
+	srv, _ := newTestServer(t, "")
+
+	if status, data := call(t, srv, http.MethodPost, "/api/workflows", "", approvalWorkflow()); status != http.StatusCreated {
+		t.Fatalf("create status = %d: %s", status, data)
+	}
+	status, data := call(t, srv, http.MethodPost, "/api/workflows/approval/runs", "", map[string]any{})
+	if status != http.StatusOK {
+		t.Fatalf("run status = %d: %s", status, data)
+	}
+	runID, _ := decode(t, data)["runId"].(string)
+	if runID == "" {
+		t.Fatalf("missing runId: %s", data)
+	}
+
+	post := func() int {
+		body, _ := json.Marshal(map[string]any{"decision": "approved"})
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/runs/"+runID+"/resume", bytes.NewReader(body))
+		if err != nil {
+			return -1
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return -1
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode
+	}
+
+	results := make(chan int, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- post()
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	ok, conflict := 0, 0
+	for status := range results {
+		switch status {
+		case http.StatusOK:
+			ok++
+		case http.StatusConflict:
+			conflict++
+		default:
+			t.Fatalf("unexpected resume status %d", status)
+		}
+	}
+	if ok != 1 || conflict != 1 {
+		t.Fatalf("resume statuses: ok=%d conflict=%d, want 1/1", ok, conflict)
 	}
 }
 
@@ -575,6 +783,90 @@ func TestWebhook(t *testing.T) {
 	status, _ = call(t, srv, http.MethodGet, "/hook/orders", "", nil)
 	if status != http.StatusMethodNotAllowed {
 		t.Fatalf("wrong method status = %d, want 405", status)
+	}
+}
+
+type gateHost struct {
+	*host.Sim
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (h *gateHost) HTTP(ctx context.Context, _ flow.HTTPRequest) (flow.HTTPResponse, error) {
+	h.once.Do(func() { close(h.started) })
+	select {
+	case <-h.release:
+		return flow.HTTPResponse{Status: 200, Body: flow.Item{"ok": true}}, nil
+	case <-ctx.Done():
+		return flow.HTTPResponse{}, ctx.Err()
+	}
+}
+
+func TestWebhookRunSurvivesClientCancellation(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	h := &gateHost{Sim: host.NewSim(), started: make(chan struct{}), release: make(chan struct{})}
+	srv := server.Handler(server.Deps{
+		Version: "test",
+		Store:   st,
+		Engine:  engine.New(st, h),
+	})
+
+	wf := &graph.Workflow{
+		ID: "hook-cancel", Name: "Hook Cancel", Version: 1,
+		Nodes: []graph.Node{
+			{ID: "start", Type: "trigger.webhook", TypeVersion: 1, Name: "Hook",
+				Config: map[string]any{"path": "cancel", "method": "POST"}},
+			{ID: "call", Type: "http.request", TypeVersion: 1, Name: "Call",
+				Config: map[string]any{"method": "GET", "url": "https://example.com/x"}},
+		},
+		Edges: []graph.Edge{
+			{From: graph.Endpoint{Node: "start", Port: "main"}, To: graph.Endpoint{Node: "call", Port: "main"}},
+		},
+	}
+	if err := st.SaveWorkflow(wf); err != nil {
+		t.Fatalf("save workflow: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/hook/cancel", strings.NewReader(`{"name":"loom"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		srv.ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	select {
+	case <-h.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("run never reached the host")
+	}
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+	close(h.release)
+	<-done
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("hook status = %d: %s", rec.Code, rec.Body.String())
+	}
+	out := decode(t, rec.Body.Bytes())
+	runID, _ := out["runId"].(string)
+	if runID == "" {
+		t.Fatalf("missing runId in %v", out)
+	}
+	run, err := st.GetRun(runID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.Status != "done" {
+		t.Fatalf("run status = %q (%s), want done", run.Status, run.Error)
 	}
 }
 
@@ -1043,5 +1335,72 @@ func TestPreviewSchedule(t *testing.T) {
 	invalid := decode(t, data)
 	if invalid["valid"] != false || invalid["error"] == "" {
 		t.Fatalf("invalid preview = %s", data)
+	}
+}
+
+// /healthz must expose code.python execution posture (P3-6): disabled by
+// default; when enabled, the policy path, cap, and OS-level sandbox state
+// travel with it so operators can inspect isolation without shell access.
+func TestHealthzExposesSubprocessState(t *testing.T) {
+	srv, _ := newTestServer(t, "")
+
+	status, data := call(t, srv, http.MethodGet, "/healthz", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("healthz status = %d", status)
+	}
+	if !strings.Contains(string(data), `"enabled":false`) {
+		t.Fatalf("default healthz does not report subprocess disabled: %s", data)
+	}
+
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	srv2 := httptest.NewServer(server.Handler(server.Deps{
+		Version: "test",
+		Store:   st,
+		Engine:  engine.New(st, host.NewSim()),
+		SubprocessState: server.SubprocessState{
+			Enabled: true, Policy: "/data/subprocess-policy.json", CapMB: 512,
+			OSLevel: "none", Container: "run subprocess workflows in a container",
+		},
+	}))
+	t.Cleanup(srv2.Close)
+
+	status, data = call(t, srv2, http.MethodGet, "/healthz", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("healthz status = %d", status)
+	}
+	for _, want := range []string{`"enabled":true`, `"/data/subprocess-policy.json"`, `"capMB":512`, `"osLevel":"none"`, `"containerRecommended"`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("enabled healthz missing %s: %s", want, data)
+		}
+	}
+
+	// Isolation-runner campaign: the network posture rides the same
+	// signal — deny is advertised as deny, and the disabled/absent
+	// state stays absent rather than defaulting to allow.
+	status, data = call(t, srv2, http.MethodGet, "/healthz", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("healthz status = %d", status)
+	}
+	srv3 := httptest.NewServer(server.Handler(server.Deps{
+		Version: "test",
+		Store:   st,
+		Engine:  engine.New(st, host.NewSim()),
+		SubprocessState: server.SubprocessState{
+			Enabled: true, Policy: "/data/subprocess-policy.json",
+			Network: "deny",
+		},
+	}))
+	t.Cleanup(srv3.Close)
+	status, data = call(t, srv3, http.MethodGet, "/healthz", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("healthz status = %d", status)
+	}
+	if !strings.Contains(string(data), `"network":"deny"`) {
+		t.Fatalf("deny posture must be advertised: %s", data)
 	}
 }

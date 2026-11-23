@@ -2,6 +2,9 @@ package host
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -45,6 +48,20 @@ func (s *Sim) HTTP(_ context.Context, req flow.HTTPRequest) (flow.HTTPResponse, 
 			"status":   "paid",
 			"currency": "USD",
 		}
+	case strings.Contains(url, "/paged"):
+		// A cursor-paginated fixture: the first call returns a cursor, the
+		// second returns an empty one, so pagination loops terminate.
+		if strings.Contains(url, "cursor=p2") {
+			body = flow.Item{"items": []any{map[string]any{"id": "P-3"}}, "nextCursor": ""}
+		} else {
+			body = flow.Item{
+				"items": []any{
+					map[string]any{"id": "P-1"},
+					map[string]any{"id": "P-2"},
+				},
+				"nextCursor": "p2",
+			}
+		}
 	case strings.Contains(url, "/refunds"):
 		body = flow.Item{"ok": true, "refundId": "R-1042", "amount": 249.0}
 	case strings.Contains(url, "/audit"):
@@ -65,7 +82,26 @@ func (s *Sim) HTTP(_ context.Context, req flow.HTTPRequest) (flow.HTTPResponse, 
 		Status: 200, StatusText: "OK",
 		Headers: map[string]string{"content-type": "application/json"},
 		Body:    body,
+		Raw:     simRaw(body),
 	}, nil
+}
+
+// simRaw reconstructs response bytes deterministically so nodes that need
+// faithful bytes behave identically in dry-run and live runs.
+func simRaw(body flow.Item) []byte {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
+// SaveBlob content-addresses the data without persisting it: a dry run must
+// not write side effects, but nodes still need the hash the live run would
+// produce for identical output.
+func (s *Sim) SaveBlob(data []byte) (string, int, error) {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), len(data), nil
 }
 
 func (s *Sim) Query(_ context.Context, _, _ string) ([]flow.Item, error) {
