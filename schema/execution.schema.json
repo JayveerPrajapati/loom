@@ -43,6 +43,10 @@
           "type": "string",
           "description": "Subflow node in the parent run that started this run."
         },
+        "rootRunId": {
+          "type": "string",
+          "description": "First run in an event chain; budgets event fan-out."
+        },
         "resumeNode": {
           "type": "string",
           "description": "Node at which a waiting run is suspended."
@@ -50,6 +54,11 @@
         "resumeToken": {
           "type": "string",
           "description": "Token used to resume a waiting run."
+        },
+        "resumeTokenExpiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Expiry of the resume token."
         },
         "status": {
           "enum": ["queued", "running", "waiting", "done", "failed", "cancelled"]

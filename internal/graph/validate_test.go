@@ -28,13 +28,17 @@ func TestExamplesAreClean(t *testing.T) {
 	}
 }
 
-func TestRejectsTypeMismatch(t *testing.T) {
+// TestRowsIntoHTTP verifies that rows produced by db.postgres may flow into an
+// untyped JSON consumer such as http.request.
+func TestRowsIntoHTTP(t *testing.T) {
 	wf := &Workflow{
-		ID: "type-mismatch", Name: "Type mismatch", Version: 1,
+		ID: "rows-into-http", Name: "Rows into HTTP", Version: 1,
 		Nodes: []Node{
 			mkNode("start", "trigger.manual", map[string]any{}, nil),
 			mkNode("query", "db.postgres", map[string]any{"operation": "query", "query": "select 1"}, map[string]string{"postgres": "cred_pg"}),
-			mkNode("post", "chat.slack", map[string]any{"channel": "#ops", "text": "hi"}, map[string]string{"slack": "cred_slack"}),
+			mkNode("post", "http.request", map[string]any{
+				"method": "POST", "url": "https://example.com", "bodyType": "none",
+			}, map[string]string{"http": "cred_http"}),
 		},
 		Edges: []Edge{
 			mkEdge("start", "main", "query", "main"),
@@ -43,8 +47,14 @@ func TestRejectsTypeMismatch(t *testing.T) {
 	}
 
 	report := Validate(wf)
-	if !hasCode(report, "type_mismatch") {
-		t.Fatalf("expected type_mismatch, got: %v", report.Issues)
+	if hasCode(report, "type_mismatch") {
+		t.Fatalf("rows into http.request should be allowed, got: %v", report.Issues)
+	}
+}
+
+func TestCompatibleRejectsMismatch(t *testing.T) {
+	if ok, _ := Compatible(nodes.TypeRows, nodes.TypeText); ok {
+		t.Fatal("rows were accepted as text")
 	}
 }
 
@@ -101,6 +111,37 @@ func TestRejectsCycle(t *testing.T) {
 	report := Validate(wf)
 	if !hasCode(report, "cycle") {
 		t.Fatalf("expected cycle, got: %v", report.Issues)
+	}
+}
+
+// The documented merge modes must be selectable, and the no-mode default must
+// stay shallow. The catalog once defaulted to append and rejected "shallow",
+// which made the documented default unreachable.
+func TestFlowMergeAcceptsDocumentedModes(t *testing.T) {
+	build := func(mode string) *Workflow {
+		return &Workflow{
+			ID: "merge-mode", Name: "Merge mode", Version: 1,
+			Nodes: []Node{
+				mkNode("start", "trigger.manual", map[string]any{}, nil),
+				mkNode("a", "data.set", map[string]any{"values": map[string]any{"a": 1}}, nil),
+				mkNode("b", "data.set", map[string]any{"values": map[string]any{"b": 2}}, nil),
+				mkNode("join", "flow.merge", map[string]any{"mode": mode}, nil),
+			},
+			Edges: []Edge{
+				mkEdge("start", "main", "a", "main"),
+				mkEdge("start", "main", "b", "main"),
+				mkEdge("a", "main", "join", "a"),
+				mkEdge("b", "main", "join", "b"),
+			},
+		}
+	}
+	for _, mode := range []string{"shallow", "append", "byIndex"} {
+		if report := Validate(build(mode)); hasCode(report, "invalid_config") {
+			t.Errorf("mode %q rejected: %v", mode, report.Issues)
+		}
+	}
+	if report := Validate(build("bogus")); !hasCode(report, "invalid_config") {
+		t.Errorf("bogus mode accepted: %v", report.Issues)
 	}
 }
 

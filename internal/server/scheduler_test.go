@@ -53,7 +53,10 @@ func TestSchedulerRunsCronJob(t *testing.T) {
 			if runs[0].Trigger != "cron" {
 				t.Fatalf("run trigger = %q, want cron", runs[0].Trigger)
 			}
-			return
+			if terminalStatus(runs[0].Status) {
+				scheduler.Stop()
+				return
+			}
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("cron job did not run before deadline")
@@ -104,7 +107,8 @@ func TestSchedulerRunsOneTimeJobAndPausesIt(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !current.Enabled && len(runs) == 1 {
+		if !current.Enabled && len(runs) == 1 && terminalStatus(runs[0].Status) {
+			scheduler.Stop()
 			return
 		}
 		if time.Now().After(deadline) {
@@ -112,4 +116,12 @@ func TestSchedulerRunsOneTimeJobAndPausesIt(t *testing.T) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+}
+
+func terminalStatus(status string) bool {
+	switch status {
+	case "done", "failed", "cancelled":
+		return true
+	}
+	return false
 }

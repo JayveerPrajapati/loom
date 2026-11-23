@@ -33,6 +33,47 @@ func FromEnv() Source {
 
 // Lookup returns the first credential found for id. Environment values use
 // LOOM_SECRET_<ID> and may be either {"type","data"} or a bare data object.
+// ValidCredentialID reports whether id is safe to use as a file name and as a
+// lookup key. It rejects path separators, dot segments and control characters,
+// but allows the broader names env/file secret sources already supported
+// (spaces, colons, unicode) so existing workflows keep working.
+func ValidCredentialID(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	if strings.ContainsAny(id, `/\`) {
+		return false
+	}
+	for _, r := range id {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	for _, part := range strings.Split(id, ".") {
+		if part == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// within reports whether path resolves inside dir after cleaning.
+func within(dir, path string) bool {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(absDir, absPath)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 func (s Source) Lookup(id string) (flow.Credential, bool) {
 	if s.Env != nil {
 		if raw := s.Env(envName(id)); raw != "" {
@@ -53,10 +94,13 @@ func (s Source) Lookup(id string) (flow.Credential, bool) {
 			}
 		}
 	}
-	if s.Dir != "" {
-		if data, err := os.ReadFile(filepath.Join(s.Dir, id+".json")); err == nil {
-			if cred, ok := parse(id, data); ok {
-				return cred, true
+	if s.Dir != "" && ValidCredentialID(id) {
+		path := filepath.Join(s.Dir, id+".json")
+		if within(s.Dir, path) {
+			if data, err := os.ReadFile(path); err == nil {
+				if cred, ok := parse(id, data); ok {
+					return cred, true
+				}
 			}
 		}
 	}

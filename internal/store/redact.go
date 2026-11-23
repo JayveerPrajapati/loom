@@ -2,11 +2,44 @@ package store
 
 import (
 	"encoding/json"
-	"regexp"
 	"strings"
 )
 
-var sensitiveKeyRegex = regexp.MustCompile(`(?i)(password|secret|token|api[_-]?key|private[_-]?key|auth|bearer|credential)`)
+// sensitiveExact names are redacted verbatim. normalizeKey removes separators
+// so api_key, apiKey and api-key all collapse to the same token.
+var sensitiveExact = map[string]bool{
+	"authorization": true, "cookie": true, "set-cookie": true, "x-api-key": true,
+	"proxy-authorization": true, "password": true, "passwd": true, "secret": true,
+	"token": true, "api_key": true, "apikey": true, "api-key": true,
+	"private_key": true, "privatekey": true, "private-key": true, "bearer": true,
+	"credential": true, "credentials": true, "auth": true, "authentication": true,
+	"access_token": true, "refresh_token": true, "client_secret": true,
+}
+
+// sensitiveSuffixes catch compound names such as accessToken or clientSecret
+// without redacting counters like tokenCount.
+var sensitiveSuffixes = []string{
+	"password", "passwd", "secret", "token", "apikey", "privatekey", "credential", "credentials",
+}
+
+// nonSensitiveNames are word-shaped names that a naive substring match would
+// over-redact. They are only exempt from the substring rules, never from an
+// exact or suffix match.
+var nonSensitiveNames = map[string]bool{
+	"author": true, "authorname": true, "authoremail": true, "authorid": true,
+	"tokencount": true, "tokenizer": true, "secretary": true,
+	"authenticationstatus": true, "authmode": true, "authmethod": true,
+}
+
+func normalizeKey(key string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '_', '-', '.', ' ':
+			return -1
+		}
+		return r
+	}, strings.ToLower(strings.TrimSpace(key)))
+}
 
 // RedactValue recursively walks a map or slice and masks values whose keys indicate sensitive information.
 func RedactValue(v any) any {
@@ -62,9 +95,25 @@ func RedactJSON(data []byte) []byte {
 
 func isSensitiveKey(key string) bool {
 	clean := strings.ToLower(strings.TrimSpace(key))
-	switch clean {
-	case "authorization", "cookie", "set-cookie", "x-api-key", "proxy-authorization":
+	norm := normalizeKey(clean)
+	if sensitiveExact[clean] || sensitiveExact[norm] {
 		return true
 	}
-	return sensitiveKeyRegex.MatchString(clean)
+	for _, suffix := range sensitiveSuffixes {
+		if strings.HasSuffix(norm, suffix) {
+			return true
+		}
+	}
+	if nonSensitiveNames[norm] {
+		return false
+	}
+	for _, word := range []string{"password", "passwd", "authorization", "credential", "privatekey"} {
+		if strings.Contains(norm, word) {
+			return true
+		}
+	}
+	if strings.Contains(norm, "secret") && !strings.Contains(norm, "secretary") {
+		return true
+	}
+	return strings.Contains(norm, "apikey")
 }

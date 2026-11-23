@@ -1,7 +1,9 @@
 package store_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +19,39 @@ func openStore(t *testing.T) *store.Store {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	return st
+}
+
+func TestCountRunsByStatusIgnoresListLimit(t *testing.T) {
+	st := openStore(t)
+	for i := 0; i < 3; i++ {
+		run := store.Run{
+			ID:              "run-count-" + string(rune('a'+i)),
+			WorkflowID:      "wf-count",
+			WorkflowVersion: "v1",
+			Status:          "waiting",
+			Trigger:         "manual",
+			StartedAt:       time.Now().UTC(),
+		}
+		if err := st.CreateRun(run); err != nil {
+			t.Fatalf("create run: %v", err)
+		}
+	}
+
+	rows, err := st.ListRunsByStatus("waiting", 1)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+
+	total, err := st.CountRunsByStatus("waiting")
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if total != 3 {
+		t.Fatalf("count = %d, want 3 (the list limit must not cap it)", total)
+	}
 }
 
 func TestLeaseOwnershipAndExpiry(t *testing.T) {
@@ -223,5 +258,103 @@ func TestBlobsAndCredentials(t *testing.T) {
 	}
 	if got["token"] != "secret" || got["region"] != "eu" {
 		t.Fatalf("credential round-trip = %#v", got)
+	}
+}
+
+func TestResumeWaitingIsAtomic(t *testing.T) {
+	st := openStore(t)
+	wf := &graph.Workflow{ID: "wf", Name: "WF", Version: 1, Nodes: []graph.Node{}}
+	if err := st.SaveWorkflow(wf); err != nil {
+		t.Fatalf("save workflow: %v", err)
+	}
+	if err := st.CreateRun(store.Run{
+		ID: "run", WorkflowID: "wf", WorkflowVersion: "v1",
+		Status: "waiting", Trigger: "manual", StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	const n = 8
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	wins := 0
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			ok, err := st.ResumeWaiting("run")
+			if err != nil {
+				t.Errorf("resume: %v", err)
+				return
+			}
+			if ok {
+				mu.Lock()
+				wins++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if wins != 1 {
+		t.Fatalf("resume claims = %d, want 1", wins)
+	}
+}
+
+func TestBlobStoresRawAndDisplayRedacts(t *testing.T) {
+	st := openStore(t)
+	raw := []byte(`{"author":"Ada","password":"hunter2","tokenCount":3}`)
+
+	hash, err := st.SaveBlob(raw)
+	if err != nil {
+		t.Fatalf("save blob: %v", err)
+	}
+	got, err := st.LoadBlob(hash)
+	if err != nil {
+		t.Fatalf("load blob: %v", err)
+	}
+	if !bytes.Equal(got, raw) {
+		t.Fatalf("raw blob = %s, want %s", got, raw)
+	}
+
+	display, err := st.LoadBlobForDisplay(hash)
+	if err != nil {
+		t.Fatalf("load display blob: %v", err)
+	}
+	var view map[string]any
+	if err := json.Unmarshal(display, &view); err != nil {
+		t.Fatalf("decode display blob: %v", err)
+	}
+	if view["author"] != "Ada" || view["tokenCount"] != float64(3) {
+		t.Fatalf("display over-redacted: %#v", view)
+	}
+	if view["password"] != "[redacted]" {
+		t.Fatalf("display password = %v, want [redacted]", view["password"])
+	}
+}
+
+func TestSensitiveKeyMatcherAvoidsFalsePositives(t *testing.T) {
+	cases := map[string]bool{
+		"author":               false,
+		"authorName":           false,
+		"tokenCount":           false,
+		"authenticationStatus": false,
+		"secretary":            false,
+		"password":             true,
+		"api_key":              true,
+		"apiKey":               true,
+		"Authorization":        true,
+		"clientSecret":         true,
+		"accessToken":          true,
+		"private_key":          true,
+	}
+	for key, want := range cases {
+		out, ok := store.RedactValue(map[string]any{key: "v"}).(map[string]any)
+		if !ok {
+			t.Fatalf("%s: unexpected redaction type", key)
+		}
+		got := out[key] == "[redacted]"
+		if got != want {
+			t.Errorf("isSensitiveKey(%q) = %v, want %v", key, got, want)
+		}
 	}
 }

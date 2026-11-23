@@ -19,6 +19,10 @@
     "type": { "type": "string", "minLength": 1 },
     "typeVersion": { "type": "integer", "minimum": 1 },
     "category": { "enum": ["trigger", "logic", "action", "ai"] },
+    "displayName": {
+      "type": "string",
+      "description": "Human-facing name shown in the node library and as a new node's default name."
+    },
     "description": { "type": "string" },
     "inputs": { "type": "array", "items": { "type": "string", "minLength": 1 } },
     "outputs": { "type": "array", "items": { "type": "string", "minLength": 1 } },
@@ -27,6 +31,15 @@
     "outputTypeKey": {
       "type": "string",
       "description": "Config field that overrides outputType (for code and transform nodes)."
+    },
+    "mappingKinds": {
+      "type": "array",
+      "items": { "enum": ["item", "body", "query", "headers", "pathParams"] },
+      "description": "Configuration Hub mapping kinds this node consumes."
+    },
+    "effects": {
+      "type": "string",
+      "description": "Human-readable side-effect contract: pure, or what the node touches."
     },
     "credentials": {
       "type": "array",
@@ -51,9 +64,24 @@
       "additionalProperties": false,
       "required": ["type"],
       "properties": {
-        "type": { "enum": ["string", "number", "boolean", "array", "object"] },
+        "type": { "enum": ["string", "number", "boolean", "array", "object", "any"] },
         "required": { "type": "boolean" },
-        "enum": { "type": "array", "items": { "type": "string" } }
+        "enum": { "type": "array", "items": { "type": "string" } },
+        "default": {
+          "description": "Effective-value fallback used only when no profile, override or node value supplies the key."
+        },
+        "pattern": { "type": "string" },
+        "min": { "type": "number" },
+        "max": { "type": "number" },
+        "label": { "type": "string" },
+        "description": { "type": "string" },
+        "placeholder": { "type": "string" },
+        "advanced": { "type": "boolean" },
+        "secret": { "type": "boolean" },
+        "profileable": {
+          "type": "boolean",
+          "description": "The field may be supplied by a configuration profile; secret fields are never profileable."
+        }
       }
     }
   }

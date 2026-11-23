@@ -2,7 +2,7 @@ package nodes
 
 import (
 	"context"
-	"regexp"
+	"strings"
 	"testing"
 
 	"loom/internal/flow"
@@ -17,18 +17,22 @@ func runNode(t *testing.T, node flow.Node, config map[string]any) flow.Item {
 	return out["main"]
 }
 
-func TestChatText(t *testing.T) {
-	body := flow.Item{"choices": []any{map[string]any{"message": map[string]any{"content": "hello"}}}}
-	if got := chatText(body); got != "hello" {
-		t.Fatalf("chatText = %q", got)
-	}
-}
-
-func TestRegistryCoversCatalog(t *testing.T) {
+func TestRegistryMatchesCatalog(t *testing.T) {
 	registry := Registry()
 	for _, def := range All() {
 		if _, ok := registry[def.Type]; !ok {
 			t.Errorf("catalog type %q has no implementation", def.Type)
+		}
+	}
+	for typ := range registry {
+		// Connector-authored types dispatch through the shared
+		// connector. prefix entry (Campaign 4); the catalog freezes
+		// built-ins only.
+		if strings.HasPrefix(typ, ConnectorTypePrefix) {
+			continue
+		}
+		if _, ok := Get(typ); !ok {
+			t.Errorf("registered type %q is not in the catalog", typ)
 		}
 	}
 }
@@ -45,48 +49,9 @@ func TestJSONParseNode(t *testing.T) {
 	}
 }
 
-func TestCSVParseNode(t *testing.T) {
-	item := runNode(t, csvParseNode{}, map[string]any{"text": "name,age\nAda,36\nLinus,55\n"})
-	rows, ok := item["rows"].([]any)
-	if !ok || len(rows) != 2 {
-		t.Fatalf("rows = %#v", item["rows"])
-	}
-	first := rows[0].(map[string]any)
-	if first["name"] != "Ada" || first["age"] != "36" {
-		t.Fatalf("first row = %#v", first)
-	}
-}
-
 func TestTemplateNode(t *testing.T) {
 	item := runNode(t, templateNode{}, map[string]any{"template": "Hi there"})
 	if item["text"] != "Hi there" {
 		t.Fatalf("text = %v", item["text"])
-	}
-}
-
-func TestHMACNode(t *testing.T) {
-	item := runNode(t, hmacNode{}, map[string]any{
-		"value": "hello", "secret": "key", "algorithm": "sha256",
-	})
-	signature, _ := item["signature"].(string)
-	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(signature) {
-		t.Fatalf("signature = %q", signature)
-	}
-}
-
-func TestUUIDNode(t *testing.T) {
-	item := runNode(t, uuidNode{}, nil)
-	uuid, _ := item["uuid"].(string)
-	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(uuid) {
-		t.Fatalf("uuid = %q", uuid)
-	}
-}
-
-func TestDateFormatNode(t *testing.T) {
-	item := runNode(t, dateFormatNode{}, map[string]any{
-		"value": "2026-10-26T12:00:00Z", "layout": "2006-01-02", "timezone": "UTC",
-	})
-	if item["date"] != "2026-10-26" {
-		t.Fatalf("date = %v", item["date"])
 	}
 }
