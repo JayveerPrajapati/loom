@@ -11,12 +11,29 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: loom
+          POSTGRES_DB: loom
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U loom"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      # actions/checkout v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # actions/setup-go v5.6.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version: "1.26"
-      - uses: actions/setup-node@v4
+      # actions/setup-node v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "24"
           cache: npm
@@ -26,24 +43,40 @@ jobs:
         run: |
           npm ci
           npm run build
+      - name: Phase acceptance — web unit tests
+        working-directory: web
+        run: npm test
       - name: Format
         run: test -z "$(gofmt -l .)"
       - name: Vet
         run: go vet ./...
       - name: Staticcheck
-        uses: dominikh/staticcheck-action@v1
+        # dominikh/staticcheck-action v1.4.1; staticcheck 2026.2 (v0.8.0)
+        uses: dominikh/staticcheck-action@672a31696676d1592844bf0164b3bbfd855a4d50
         with:
-          version: "latest"
+          version: "2026.2"
           install-go: false
       - name: Vulnerability scan
-        uses: golang/govulncheck-action@v1
+        # golang/govulncheck-action v1.1.0
+        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f
       - name: Test (race)
         run: make test-race
+      - name: SQL guard fuzz
+        run: go test -fuzz FuzzValidateSingleSQLStatement -fuzztime 10s ./internal/host
+      - name: Postgres integration
+        run: go test ./internal/host -run TestLiveQueryPostgres -count=1
+        env:
+          LOOM_TEST_POSTGRES_DSN: postgres://loom@localhost:5432/loom?sslmode=disable
+      - name: Postgres connection benchmarks
+        run: go test ./internal/host -bench 'BenchmarkLiveQueryPostgres' -benchtime 20x -run '^$'
+        env:
+          LOOM_TEST_POSTGRES_DSN: postgres://loom@localhost:5432/loom?sslmode=disable
       - name: Engine coverage
         run: make coverage
       - name: All-package coverage
         run: make coverage-all
-      - uses: actions/upload-artifact@v4
+      # actions/upload-artifact v4.6.2
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: coverage
@@ -55,11 +88,24 @@ jobs:
       - name: Install Playwright browser
         working-directory: web
         run: npx playwright install --with-deps chromium
-      - name: Editor end-to-end tests
+      # Phase acceptance: the full main + isolated Playwright passes are
+      # the phase gate; the unit parity/state gate runs above.
+      - name: Phase acceptance — editor end-to-end tests
         working-directory: web
         run: npm run e2e:only
         env:
           CI: "true"
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: playwright
+          path: |
+            web/playwright-report
+            web/test-results
+            web/e2e-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Validate examples
         run: ./bin/loom validate examples/*.json
       - name: Run examples (simulated)
@@ -67,3 +113,96 @@ jobs:
           for f in examples/*.json; do
             ./bin/loom test --data "$RUNNER_TEMP/loom-ci" "$f"
           done
+
+  docker-python-smoke:
+    name: Docker Python image smoke test
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Build the Python image
+        run: docker build -f Dockerfile.python -t loom:python-smoke .
+      - name: Serve with subprocess nodes enabled
+        run: |
+          mkdir -p smoke-data
+          docker run -d --name loom-smoke -p 5678:5678 \
+            -v "$PWD/smoke-data:/data" \
+            -e LOOM_BOOTSTRAP_ADMIN_EMAIL=smoke@example.com \
+            -e LOOM_BOOTSTRAP_ADMIN_PASSWORD=smoke-password-1 \
+            loom:python-smoke --enable-subprocess-nodes
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:5678/healthz >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:5678/healthz
+      - name: Run a no-dependency code.python workflow
+        run: |
+          set -euo pipefail
+          base=http://127.0.0.1:5678
+          csrf=$(curl -fsS -c /tmp/jar -H 'Content-Type: application/json' \
+            -d '{"email":"smoke@example.com","password":"smoke-password-1"}' \
+            "$base/api/auth/login" | sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p')
+          test -n "$csrf"
+          cat > /tmp/wf.json <<'EOF'
+          {
+            "id": "py-smoke", "name": "Python smoke", "version": 1,
+            "settings": {},
+            "nodes": [
+              {"id": "start", "type": "trigger.manual", "typeVersion": 1, "name": "Start",
+               "position": {"x": 0, "y": 0}, "config": {"fields": []}},
+              {"id": "py", "type": "code.python", "typeVersion": 1, "name": "Compute",
+               "position": {"x": 220, "y": 0}, "config": {"source": "return 2 + 5"}}
+            ],
+            "edges": [
+              {"from": {"node": "start", "port": "main"}, "to": {"node": "py", "port": "main"}}
+            ]
+          }
+          EOF
+          curl -fsS -b /tmp/jar -H "X-CSRF-Token: $csrf" -H 'Content-Type: application/json' \
+            --data-binary @/tmp/wf.json "$base/api/workflows" >/dev/null
+          curl -fsS -X POST -b /tmp/jar -H "X-CSRF-Token: $csrf" \
+            "$base/api/workflows/py-smoke/publish" >/dev/null
+          curl -fsS -X POST -b /tmp/jar -H "X-CSRF-Token: $csrf" -H 'Content-Type: application/json' \
+            -d '{}' "$base/api/workflows/py-smoke/runs" > /tmp/run.json
+          jq -e '.status == "done"' /tmp/run.json >/dev/null
+          grep -Eq '"value": ?7' /tmp/run.json
+      - name: Publish and run a pinned-dependency code.python workflow
+        run: |
+          set -euo pipefail
+          base=http://127.0.0.1:5678
+          csrf=$(curl -fsS -c /tmp/jar -H 'Content-Type: application/json' \
+            -d '{"email":"smoke@example.com","password":"smoke-password-1"}' \
+            "$base/api/auth/login" | sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p')
+          test -n "$csrf"
+          cat > /tmp/wf-dep.json <<'EOF'
+          {
+            "id": "py-smoke-dep", "name": "Python dependency smoke", "version": 1,
+            "settings": {},
+            "nodes": [
+              {"id": "start", "type": "trigger.manual", "typeVersion": 1, "name": "Start",
+               "position": {"x": 0, "y": 0}, "config": {"fields": []}},
+              {"id": "py", "type": "code.python", "typeVersion": 1, "name": "Use dependency",
+               "position": {"x": 220, "y": 0},
+               "config": {"source": "import idna\nreturn {\"dep\": idna.__name__}",
+                          "requirements": ["idna==3.10"]}}
+            ],
+            "edges": [
+              {"from": {"node": "start", "port": "main"}, "to": {"node": "py", "port": "main"}}
+            ]
+          }
+          EOF
+          curl -fsS -b /tmp/jar -H "X-CSRF-Token: $csrf" -H 'Content-Type: application/json' \
+            --data-binary @/tmp/wf-dep.json "$base/api/workflows" >/dev/null
+          # Publishing builds the pinned dependency environment with uv.
+          curl -fsS -X POST -b /tmp/jar -H "X-CSRF-Token: $csrf" \
+            "$base/api/workflows/py-smoke-dep/publish" >/dev/null
+          curl -fsS -X POST -b /tmp/jar -H "X-CSRF-Token: $csrf" -H 'Content-Type: application/json' \
+            -d '{}' "$base/api/workflows/py-smoke-dep/runs" > /tmp/run-dep.json
+          jq -e '.status == "done"' /tmp/run-dep.json >/dev/null
+          grep -Eq '"dep": ?"idna"' /tmp/run-dep.json
+      - name: Server logs
+        if: always()
+        run: docker logs loom-smoke || true
+      - name: Cleanup
+        if: always()
+        run: docker rm -f loom-smoke || true

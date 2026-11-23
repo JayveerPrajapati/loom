@@ -11,6 +11,10 @@ services:
       - loom-data:/data
     environment:
       LOOM_TOKEN: ${LOOM_TOKEN:-}
+      # Bootstrap the first admin: only creates an account while the database
+      # has zero users. Unset (or comment out) after the first start.
+      LOOM_BOOTSTRAP_ADMIN_EMAIL: ${LOOM_BOOTSTRAP_ADMIN_EMAIL:-}
+      LOOM_BOOTSTRAP_ADMIN_PASSWORD: ${LOOM_BOOTSTRAP_ADMIN_PASSWORD:-}
     restart: unless-stopped
 
 volumes:
