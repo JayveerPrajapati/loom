@@ -242,7 +242,14 @@ func TestExecMissingEnvironment(t *testing.T) {
 func TestExecMemoryCapAppliedOrLoudlyRefused(t *testing.T) {
 	l := newExecLive()
 	res, err := l.Exec(context.Background(), flow.ExecRequest{
-		Source:      `return {"ok": True}`,
+		Source: `
+# Attempt an allocation exceeding the 16MB cap
+try:
+    _ = bytearray(32 * 1024 * 1024)
+except MemoryError:
+    raise MemoryError("allocation exceeded cap")
+return {"ok": True}
+`,
 		Stdin:       flow.Item{},
 		MaxMemoryMB: 16,
 	})

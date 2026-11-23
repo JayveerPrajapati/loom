@@ -228,7 +228,7 @@ func runBackupRestore(args []string) error {
 		return err
 	}
 	defer os.RemoveAll(dir)
-	if err := os.Rename(dir, *to); err != nil {
+	if err := moveOrCopyDir(dir, *to); err != nil {
 		return err
 	}
 	fmt.Printf("restored %s to %s\n", *backup, *to)
@@ -306,4 +306,40 @@ func extractBackup(backup string) (string, error) {
 		return "", errors.New("archive has no loom.db")
 	}
 	return dir, nil
+}
+
+// moveOrCopyDir tries renaming src to dst first, and falls back to recursive copy
+// if renaming across devices fails (EXDEV).
+func moveOrCopyDir(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+		if err != nil {
+			return err
+		}
+		defer out.Close()
+		_, err = io.Copy(out, in)
+		return err
+	})
 }

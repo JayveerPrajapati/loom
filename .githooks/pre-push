@@ -1,11 +1,19 @@
 #!/bin/sh
 set -eu
 
-echo "pre-push: go test -race ./..."
-go test -race ./...
+# If a C compiler is available and CGO is supported, run race detector;
+# otherwise run standard tests. (CI runs the full race gate in Ubuntu).
+if command -v gcc >/dev/null 2>&1 || command -v clang >/dev/null 2>&1; then
+  echo "pre-push: CGO_ENABLED=1 go test -race ./..."
+  CGO_ENABLED=1 go test -race ./...
+else
+  echo "pre-push: gcc/clang not detected, falling back to: go test ./..."
+  go test ./...
+fi
 
 if [ -d web/node_modules ]; then
   (cd web && npm run typecheck)
 fi
 
 echo "pre-push checks passed (run 'make check' and 'make e2e' for the full gate)"
+
