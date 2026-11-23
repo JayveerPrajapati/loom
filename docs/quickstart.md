@@ -1,236 +1,220 @@
-# Loom quickstart
+# Quickstart
 
-This is the 15-minute path from a fresh checkout to a running, inspectable
-workflow. Loom ships as one Go binary with SQLite; the React editor is embedded
-at build time.
+From a fresh checkout to a running, inspectable workflow. Loom is one Go binary
+with SQLite; the React editor is embedded at build time.
+
+Requires Go 1.26+. Node 20+ is only needed to rebuild the editor.
 
 ## 1. Build and validate
-
-Requires Go 1.26+. Node is only needed if you are rebuilding the editor.
 
 ```sh
 make build
 ./bin/loom validate examples/*.json
 ```
 
-`validate` checks the workflow schema, node configs, credentials, ports, trigger
-rules, reachability and cycles. It exits non-zero on errors.
+`validate` checks the schema, node configs, credentials, ports, trigger rules,
+reachability and cycles.
 
-## 2. Run an example offline
+## 2. Run a workflow offline
 
-The CLI uses a deterministic simulated host by default. No network, Postgres or
-Slack account is required.
+The CLI uses a deterministic simulated host by default: no HTTP or Postgres
+calls leave the process.
 
 ```sh
 ./bin/loom test examples/daily-digest.flow.json
 ./bin/loom test examples/crm-sync.flow.json
 ```
 
-Use `run` instead of `test` when a workflow contains an approval. `run` stops
-with a run ID; resume it explicitly:
+Use `run` instead of `test` for workflows with an approval:
 
 ```sh
 ./bin/loom run examples/refund-approval.flow.json
-# copy the printed run ID
 ./bin/loom resume --decision approved <runID>
 ```
 
-`test --auto-approve` is also available for CI. Pass `--verbose` to print every
-event, and `--input '{"orderId":"A-1"}'` to seed the trigger.
+`loom test` auto-approves approval nodes, so it is the CI-safe run mode. Add
+`--verbose` for every event and `--input '{"orderId":"A-1"}'` to seed the
+trigger. Use `loom run --auto-approve` when you want a normal run with
+approvals auto-approved.
 
-## 3. Run in Docker
+## 3. Create the first account
 
-The image is a distroless multi-stage build with the editor embedded. The
-container serves the live host and stores SQLite data in `/data`.
+```sh
+printf '%s' 'choose-a-strong-password' | \
+  ./bin/loom user create --data ./data --email you@example.com --role admin --password-stdin
+```
+
+The server refuses to start with no users and no `LOOM_TOKEN` unless you pass
+`--allow-anonymous` (development only). Add teammates with
+`loom user create --role viewer|operator|editor|admin`.
+
+## 4. Serve
+
+```sh
+./bin/loom serve --data ./data --sim
+```
+
+Open <http://localhost:5678> and sign in. `--sim` uses the deterministic host;
+omit it for real HTTP calls. Behind HTTPS, also pass `--cookie-secure` or set
+`LOOM_COOKIE_SECURE=1`.
+
+Docker:
 
 ```sh
 docker build -t loom:local .
-docker run --rm -p 5678:5678 -v loom-data:/data loom:local
+docker run --rm -p 5678:5678 -v loom-data:/data \
+  -e LOOM_BOOTSTRAP_ADMIN_EMAIL=you@example.com \
+  -e LOOM_BOOTSTRAP_ADMIN_PASSWORD='choose-a-strong-password' \
+  loom:local
 ```
 
-Or with Compose:
+The bootstrap variables only create an account when the database has none.
+Unset the password after the first start.
 
-```sh
-LOOM_TOKEN=secret docker compose up --build
-```
-
-For a deterministic demo inside the container, append `--sim`:
-
-```sh
-docker run --rm -p 5678:5678 -v loom-data:/data loom:local --sim
-```
-
-## 4. Open the editor
-
-```sh
-./bin/loom serve --data ./data --sim
-```
-
-Open <http://localhost:5678>. `--sim` uses the deterministic host; omit it to
-serve the live host (real HTTP calls). On first load, pick a bundled example or
-create a blank workflow.
-
-In the editor:
+## 5. Editor basics
 
 1. Select a node to edit its config in the inspector.
-2. Click **Input** to set the trigger JSON for manual runs, then **Run with
-   input**; node status streams into the canvas.
-3. Click a completed node to inspect its last input/output and request/response.
-4. Open **Runs** to inspect the event log, per-node request/response and run
-   summary, download a runbook, replay a node or diff two runs.
-5. If a run fails, click **Retry failed node** to re-run it and its descendants.
-6. A waiting approval exposes **Approve**, **Reject** and **Copy approval link**.
-7. In the inspector, **Data from upstream** lists fields recorded by the latest
-   run and inserts `$node["<id>"]` expressions into the active text field. The
-   preview shows the rendered value before you run again.
-8. Optional credentials such as `http.request` can be left blank. Stored
-   credentials appear in the inspector's credential suggestions; manage them on
-   the **Credentials** page (`/credentials`) or through the API.
+2. Use **Input** to set the trigger JSON, then **Run with input**.
+3. Click a completed node to see input/output, request/response, configuration
+   and credential names.
+4. **Runs** shows the event log, diff, runbook export and replay.
+5. A failing run offers **Retry failed node**.
+6. A waiting approval offers **Approve**, **Reject**, **Copy approval link** and
+   **Revoke link**; the bar shows how long the link stays valid. The Tasks inbox
+   lists approvals oldest-first with their wait age, and itemizes any bulk
+   failures so the failed runs can be retried.
+   `GET /api/decisions` and `GET /api/metrics/decisions` expose the audit trail
+   (who decided, why, through which surface, how long it waited).
+7. **Data from upstream** inserts `$node["<id>"]` expressions for fields recorded
+   by the latest run.
+8. Manage credentials on **Credentials** (`/credentials`). Credential values are
+   encrypted at rest and never returned by the list endpoint.
+9. Reusable configuration lives in **Profiles** (`/profiles`).
+   Pick a node type, create a profile, then attach it from the Inspector. A
+   sparse node inherits the profile; values you author on the node win and are
+   badged **Override**. Profiles apply at publish; the node’s own fields win.
+   See [ownership.md](ownership.md).
+10. **Data contracts**, **Mappings**, **Scripts** and **Connectors** are
+    advanced assets under the Profiles landing. Every asset page shares the same
+    list, editor, destructive-dialog and error/retry grammar; see
+    [page-grammar.md](page-grammar.md).
 
-The approval link is a capability URL:
+## 6. Authentication and API
+
+Cookie sessions, argon2id passwords, CSRF-protected mutations and per-user API
+tokens. Roles: `viewer` < `operator` < `editor` < `admin`.
+
+Create a token for scripts:
 
 ```sh
-curl -X POST http://localhost:5678/hook/approval/<token> \
+./bin/loom token create --data ./data --email you@example.com --name ci
+```
+
+Use it as a bearer token (no CSRF needed):
+
+```sh
+TOKEN=... # printed once by the command above
+curl -H "Authorization: Bearer $TOKEN" http://localhost:5678/api/workflows
+curl -X POST -H "Authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' \
-  -d '{"decision":"approved"}'
+  -d '{"input":{"title":"Hello"}}' \
+  http://localhost:5678/api/workflows/publish-approval/runs
+curl -N -H "Authorization: Bearer $TOKEN" \
+  http://localhost:5678/api/runs/<runID>/events
 ```
 
-The GET form renders a confirmation page; POST accepts a form (`decision=approved`)
-or JSON. Slack interactive payloads are accepted on the same endpoint.
+`LOOM_TOKEN` remains as an audited break-glass admin identity; prefer named users
+and scoped tokens. `/healthz`, `/readyz`, `/api/version`, `/metrics` and the
+`/hook/*` capability endpoints are unauthenticated by design. See
+[security.md](security.md#public-endpoints) for what each surface exposes and
+how to restrict it.
 
-## 5. Import and call the API
-
-Import an example into the data directory, then serve that directory:
-
-```sh
-./bin/loom import --data ./data examples/publish-approval.flow.json
-./bin/loom serve --data ./data --sim
-```
-
-List workflows and start a run:
-
-```sh
-curl -s http://localhost:5678/api/workflows
-
-curl -s -X POST http://localhost:5678/api/workflows/publish-approval/runs \
-  -H 'content-type: application/json' \
-  -d '{"input":{"title":"Hello"}}'
-```
-
-The response includes the run ID. Stream events as SSE:
-
-```sh
-curl -N http://localhost:5678/api/runs/<runID>/events
-```
-
-Add `?format=json` for newline-delimited JSON. Useful endpoints:
+Selected endpoints:
 
 | Method | Path | Purpose |
 |---|---|---|
+| `GET` | `/api/auth/me` | current user and CSRF token |
+| `GET` | `/api/users` | list users (admin) |
+| `POST` | `/api/tokens` | create a scoped token |
 | `GET` | `/api/workflows` | list workflows |
-| `POST` | `/api/workflows` | create a workflow |
-| `GET` | `/api/workflows/{id}` | read one workflow |
-| `PUT` | `/api/workflows/{id}` | replace a workflow |
-| `DELETE` | `/api/workflows/{id}` | delete a workflow |
 | `POST` | `/api/workflows/{id}/runs` | start a run (`?async=1` returns 202) |
-| `POST` | `/api/schedules/preview` | validate `{triggerType,triggerConfig,count}` and return the next run times |
-| `GET` | `/api/runs` | list runs (`?workflow=`, `?parent=`, `?limit=` up to 500) |
-| `GET` | `/api/stats` | workspace run totals for the dashboard |
-| `GET` | `/api/runs/{id}` | run metadata |
-| `GET` | `/api/runs/{id}/events` | SSE event stream |
-| `GET` | `/api/runs/{id}/data-context?nodeId=` | recorded upstream outputs and status |
-| `POST` | `/api/workflows/{id}/preview` | render an expression against a recorded run |
-| `GET` | `/api/credentials` | list credential IDs and types |
-| `POST` | `/api/credentials` | create `{type,data,id?}` (encrypted at rest) |
-| `DELETE` | `/api/credentials/{id}` | delete a credential |
-| `POST` | `/api/runs/{id}/cancel` | cancel a queued/running/waiting run |
-| `POST` | `/api/runs/{id}/resume` | resume with `{"decision":"approved"}` |
-| `POST` | `/api/runs/{id}/replay` | replay `{"mode":"full"}`, `{"mode":"step","nodeId":...}` or `{"mode":"from","nodeId":...}` |
-| `GET` | `/api/runs/{id}/diff?against=<runID>` | compare two runs |
-| `GET` | `/api/workflows/{id}/runbook` | Markdown operations runbook |
-| `GET` | `/api/blobs/{hash}` | content-addressed step payload |
-| `GET` | `/api/node-types` | catalog and config contracts |
-| `GET` | `/api/examples` | bundled examples |
+| `GET` | `/api/runs/{id}/events` | SSE event stream (`?format=json` for NDJSON) |
+| `GET` | `/api/runs/{id}/data-context?nodeId=` | recorded upstream outputs and config |
+| `POST` | `/api/runs/{id}/replay` | `full`, `step`, `step` + `"execute":true`, or `from` |
+| `GET` | `/api/runs/{id}/diff?against=` | compare two runs |
+| `GET` | `/api/credentials` | list credential IDs (admin) |
 
-Enable bearer-token auth with `--token` or `LOOM_TOKEN`:
-
-```sh
-LOOM_TOKEN=secret ./bin/loom serve --data ./data
-curl -H 'Authorization: Bearer secret' http://localhost:5678/api/workflows
-```
-
-`/healthz`, `/readyz` and approval/webhook capability URLs are intentionally unauthenticated.
-
-## 6. Webhooks and cron
+## 7. Webhooks, cron and replay
 
 A `trigger.webhook` node with `path: "orders"` listens at `POST /hook/orders`.
-The request body becomes the trigger item. JSON objects are used directly; JSON
-arrays/scalars are wrapped as `{"body": ...}`. A configured `method` is enforced.
-The default response is a small `{runId,status}` receipt; add `?async=1` to
-return immediately while the run continues in the background. Concurrent
-webhook executions are capped so one slow flow cannot exhaust the process.
+The JSON body becomes the trigger item; arrays and scalars are wrapped as
+`{"body": ...}`. Add `?async=1` to return immediately.
 
-A `trigger.cron` node uses a five-field cron expression, for example
-`0 8 * * *`; an optional `timezone` prefix such as `CRON_TZ=Europe/Berlin` is
-honored. The scheduler reloads when workflows change. On startup, legacy
-workflow cron triggers are migrated into cron jobs; a paused cron job suppresses
-the workflow-level fallback so pausing actually stops the schedule. The jobs UI
-previews the next three run times through `/api/schedules/preview`. Cron runs
-start from the job's input defaults (or an empty item) and the trigger node adds
-an RFC3339 `now` field.
-
-## 7. Replay and inspect
+A `trigger.cron` node takes a five-field expression and optional
+`CRON_TZ=Europe/Berlin`. Missed windows are not backfilled. Legacy workflow cron
+triggers are migrated into jobs on startup.
 
 ```sh
-./bin/loom runs --data ./data
-./bin/loom replay --data ./data <runID> --step summarize
-./bin/loom replay --data ./data <runID> --from notify
-./bin/loom runbook --data ./data publish-approval
+./bin/loom replay --data ./data --step summarize <runID>            # verify only
+./bin/loom replay --data ./data --step summarize --execute <runID>  # re-run live
+./bin/loom replay --data ./data --from notify <runID>               # child run
 ```
 
-Replay verifies the recorded event stream first. `--step` re-executes one node
-against its recorded input (side effects repeat) without appending to the
-original log; `--from` starts a new child run seeded with the original upstream
-outputs, then executes that node and its descendants. The original run is never
-mutated.
+Replay verifies the keyed event chain and every referenced blob first. `--step`
+verifies one node without executing it; `--execute` re-runs it live. `--from`
+starts a child run and repeats side effects from that node onward.
 
-## 8. Build the editor from source
+## 8. Development
 
 ```sh
-make ui        # npm install + vite build into web/dist
+make ui        # npm ci + vite build into web/dist
 make build     # embeds web/dist in the Go binary
-make check     # fmt, vet, tests, engine coverage, UI build, validation
-make e2e       # Playwright, uses serve --sim
+make check     # fmt, vet, race tests, coverage floors, UI build, example validation
+make e2e       # Playwright against a simulated server
 ```
 
-For UI development, run `cd web && npm run dev`; Vite proxies `/api` and
-`/hook` to `127.0.0.1:5678`.
+For UI development, run `cd web && npm run dev`; Vite proxies `/api` and `/hook`
+to `127.0.0.1:5678`.
 
-## Current limits
+## 9. Operations
 
-- Live `http.request` is implemented with an SSRF guard; live Postgres and Slack
-  adapters are not wired yet. Use `--sim` for the bundled examples.
-- Workflow `credentials` map credential types to IDs and never contain secrets.
-  Credentials can be created through the API and selected in the inspector;
-  secret data is encrypted at rest and never returned by the list endpoint.
-- Deployment secret stores can supply credentials without the database:
-  `LOOM_SECRET_<ID>` (JSON envelope or bare data object),
-  `LOOM_SECRETS_FILE` (JSON map of ID → credential), or
-  `LOOM_SECRETS_DIR/<id>.json`. Database credentials win; external values are
-  the fallback, so a sidecar or cloud secret manager can write either form.
-- Cron `timezone` is honored by the scheduler via `CRON_TZ` (descriptors such as
-  `@daily` included). Unset timezones use the server's local time. Missed cron
-  windows are not backfilled while the server is down; a one-time job whose
-  timestamp has passed fires immediately on the next reload.
-- In-flight runs survive a restart: on startup Loom replays each run's
-  `node.finished` events, resumes only the unfinished nodes and appends a
-  `run.resumed` marker. Completed steps are not executed twice.
-- Crash-resume, cron scheduling and retention pruning are guarded by a
-  renewable store lease. A second server pointed at the same data directory
-  serves the API but does not schedule jobs or resume runs while the first
-  instance holds the lease.
-- `/healthz` is liveness; `/readyz` pings the store and returns `503` when the
-  database is unavailable, so a load balancer can drain a broken replica.
-  SQLite runs in WAL mode with `synchronous=NORMAL`; keep the data directory on
-  local disk (not a network filesystem) when running more than one process.
-- SQLite is the only store. Postgres store/queue mode is post-v1.
+```sh
+./bin/loom doctor --data ./data                 # chains, blobs and ownership
+./bin/loom doctor --data ./data --resume        # continue an interrupted scan
+./bin/loom backup --data ./data --out snap.tgz  # consistent snapshot
+./bin/loom backup verify --backup snap.tgz      # restore to a temp dir and verify
+./bin/loom key rotate --data ./data             # rotate, old runs keep verifying
+./bin/loom prune --data ./data --dry-run        # preview retention, no deletes
+```
+
+Stop `loom serve` before a backup or key rotation. On an upgraded data
+directory, legacy profile ownership stays on the equality branch until you run
+`loom ownership migrate --data ./data --dry-run`, review
+`data/ownership-migration.json`, and apply with a fresh verified backup
+(`loom ownership migrate --apply --backup <archive>`). Then run `loom doctor`;
+the full migration and doctor semantics are in [upgrade.md](upgrade.md) and
+[ownership.md](ownership.md).
+
+## Where to go next
+
+- [ownership.md](ownership.md) — profiles, overrides, bundles and publish
+  resolution.
+- [page-grammar.md](page-grammar.md) — the shared list/editor/state grammar.
+- [node-reference.md](node-reference.md) — every node and config field.
+- [security.md](security.md) — threat model and operational limits.
+
+## Limitations
+
+- Live `http.request` and `db.postgres` are wired; they need reachable services
+  and outbound egress. `http.request` has an SSRF guard that refuses private,
+  loopback and link-local addresses. Bundled examples use `--sim`.
+- Restart recovery re-executes the node that was in flight. HTTP-style nodes send
+  a stable idempotency key; SQL writes and services that ignore it are
+  at-least-once.
+- SQLite is the only store. Multi-writer HA is not supported; a second process
+  serves reads but does not schedule or recover runs.
+- `code.python` requires `--enable-subprocess-nodes` and `uv` on the host at
+publish time. Installed dependencies are pinned to exact versions; runs never
+install anything. Python has network access inside its sandbox by design (it
+does not share the `http.request` SSRF guard).
+- No SSO, tenant isolation or encrypted-at-rest database yet.
