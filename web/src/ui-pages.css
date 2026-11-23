@@ -1,3 +1,6 @@
+/* Hallmark · checked: 2026-10-31 · genre: modern-minimal (inferred)
+ * floor: 0 FAIL · fixed: 92 · structural: 0 · scope: app
+ * built: the project · redesign: polish · v2.0.0 */
 /* Read-only views, run logs and overflow menus */
 
 .settings-menu,
@@ -32,9 +35,9 @@
   display: flex;
   flex-direction: column;
   min-width: 180px;
-  padding: 5px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
+  padding: var(--space-6);
+
+  border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--panel) 92%, transparent);
   backdrop-filter: blur(20px) saturate(1.8);
   box-shadow: var(--shadow);
@@ -43,12 +46,12 @@
 .settings-menu-list button,
 .action-menu-list button {
   width: 100%;
-  padding: 8px 10px;
+  padding: var(--space-8) var(--space-10);
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--text-sm);
   text-align: left;
   cursor: pointer;
 }
@@ -68,6 +71,13 @@
   color: var(--red);
 }
 
+/* Flipped variant: opens above the trigger when the space below it is
+   shorter than the list. */
+.action-menu-list.action-menu-up {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
 .runbar-menu {
   margin-left: 0;
 }
@@ -85,94 +95,101 @@
 
 .run-detail-head {
   align-items: flex-start;
-  max-width: 1400px;
+  max-width: 1120px;
+}
+
+.template-view-page > .page-head,
+.run-detail-page > .page-head {
+  width: 100%;
 }
 
 .run-detail-page .banner,
 .run-detail-page .run-alert {
-  max-width: 1400px;
+  max-width: 1120px;
 }
 
 .run-failure-card {
   display: flex;
   flex-wrap: wrap;
-  gap: 14px;
+  gap: var(--space-14);
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  max-width: 1400px;
-  margin: 0 auto 16px;
-  padding: 12px 14px;
+  max-width: 1120px;
+  margin: 0 auto var(--space-16);
+  padding: var(--space-12) var(--space-14);
   border: 1px solid color-mix(in srgb, var(--red) 42%, var(--line));
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--red) 8%, var(--panel));
 }
 
 .run-failure-main {
   display: flex;
-  gap: 10px;
+  gap: var(--space-10);
   align-items: flex-start;
   min-width: 0;
 }
 
 .run-failure-main strong {
   display: block;
-  margin-top: 2px;
+  margin-top: var(--space-2);
 }
 
 .run-failure-main p {
-  margin: 3px 0 0;
+  margin: var(--space-4) 0 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   overflow-wrap: anywhere;
 }
 
 .run-failure-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-8);
 }
 
 .run-view {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 390px;
-  gap: 16px;
+  gap: var(--space-16);
   width: 100%;
-  max-width: 1400px;
-  height: clamp(560px, calc(100vh - 300px), 820px);
+  max-width: 1120px;
+  /* The page shell owns the scroll: the view grows with its panels
+     instead of capping them at a viewport-derived height. */
   min-height: 560px;
   margin: 0 auto;
 }
 
 .run-canvas-panel {
+  color: var(--text);
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius-md);
   background: var(--panel);
 }
 
 .run-canvas-head {
   display: flex;
-  gap: 12px;
+  gap: var(--space-12);
   align-items: flex-start;
   justify-content: space-between;
-  padding: 11px 14px;
+  padding: var(--space-12) var(--space-14);
   border-bottom: 1px solid var(--line);
 }
 
 .run-canvas-head h2 {
-  margin: 1px 0 0;
-  font-size: 15px;
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xl);
   letter-spacing: -0.01em;
 }
 
 .run-canvas-meta {
   display: flex;
-  gap: 8px;
+  gap: var(--space-8);
   align-items: center;
 }
 
@@ -191,9 +208,9 @@
 .run-playback {
   display: flex;
   flex: none;
-  gap: 10px;
+  gap: var(--space-10);
   align-items: center;
-  padding: 8px 12px;
+  padding: var(--space-8) var(--space-12);
   border-top: 1px solid var(--line);
   background: var(--panel-2);
 }
@@ -206,19 +223,19 @@
 
 .run-playback .icon-button {
   flex: none;
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: 600;
 }
 
 .run-playback-time {
   color: var(--muted);
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   white-space: nowrap;
 }
 
 .run-compare-dialog {
-  width: min(900px, calc(100vw - 32px));
+  width: min(900px, 100%);
   max-height: min(86vh, 900px);
   overflow: auto;
 }
@@ -227,8 +244,8 @@
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
+  gap: var(--space-12);
+  margin-bottom: var(--space-8);
 }
 
 .run-compare-head .icon-button {
@@ -242,30 +259,30 @@
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius-md);
   background: var(--panel);
 }
 
 .run-dock-tabs {
   display: flex;
   flex: none;
-  gap: 4px;
-  padding: 7px;
+  gap: var(--space-4);
+  padding: var(--space-8);
   border-bottom: 1px solid var(--line);
   background: var(--panel-2);
 }
 
 .run-dock-tabs button {
   display: inline-flex;
-  gap: 6px;
+  gap: var(--space-6);
   align-items: center;
-  padding: 6px 9px;
+  padding: var(--space-6) var(--space-10);
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   font-weight: 600;
   cursor: pointer;
 }
@@ -283,13 +300,13 @@
 
 .run-dock-tabs button span {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 
 .run-dock-body {
   flex: 1;
   min-height: 0;
-  padding: 12px;
+  padding: var(--space-12);
   overflow: auto;
 }
 
@@ -297,17 +314,17 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 0 2px 8px;
+  gap: var(--space-8);
+  padding: 0 var(--space-2) var(--space-8);
   border-bottom: 1px solid var(--line);
 }
 
 .run-follow {
   display: inline-flex;
-  gap: 6px;
+  gap: var(--space-6);
   align-items: center;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-xs);
   cursor: pointer;
 }
 
@@ -318,13 +335,13 @@
 .timeline-row {
   display: grid;
   grid-template-columns: 8px minmax(0, 1fr) auto;
-  gap: 9px;
+  gap: var(--space-10);
   align-items: start;
   width: 100%;
-  padding: 9px 8px;
+  padding: var(--space-10) var(--space-8);
   border: 0;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text);
   font: inherit;
@@ -341,7 +358,27 @@
 }
 
 .timeline-row .status-dot {
-  margin-top: 5px;
+  margin-top: var(--space-6);
+}
+
+/* L3: the phone-width step list reuses the timeline row grammar with a
+   text status in the first column instead of an 8px dot. */
+.run-step-list {
+  display: flex;
+  flex-direction: column;
+  max-height: none;
+  overflow: visible;
+  padding: 0 var(--space-6) var(--space-6);
+}
+
+.run-step-list .timeline-row {
+  grid-template-columns: 4.5em minmax(0, 1fr) auto;
+}
+
+.run-step-list .run-step-status {
+  font-size: var(--text-xs);
+  font-weight: 650;
+  line-height: 1.6;
 }
 
 .timeline-main {
@@ -352,7 +389,7 @@
 
 .timeline-main strong {
   overflow: hidden;
-  font-size: 12.5px;
+  font-size: var(--text-md);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -361,54 +398,54 @@
   overflow: hidden;
   color: var(--muted);
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   font-style: normal;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .timeline-error {
-  margin-top: 3px;
+  margin-top: var(--space-4);
   color: var(--red);
-  font-size: 11px;
+  font-size: var(--text-xs);
   overflow-wrap: anywhere;
 }
 
 .timeline-duration {
   color: var(--muted);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   white-space: nowrap;
 }
 
 .run-meta-details {
-  margin-top: 14px;
-  padding-top: 10px;
+  margin-top: var(--space-14);
+  padding-top: var(--space-10);
   border-top: 1px solid var(--line);
 }
 
 .run-meta-details > summary {
   cursor: pointer;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   font-weight: 600;
 }
 
 .run-meta-details .job-facts {
-  margin-top: 8px;
+  margin-top: var(--space-8);
 }
 
 .run-children {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-top: 12px;
+  gap: var(--space-4);
+  margin-top: var(--space-12);
 }
 
 .batch-aggregate {
-  margin-top: 12px;
-  padding: 9px;
+  margin-top: var(--space-12);
+  padding: var(--space-10);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--panel-2);
 }
 
@@ -416,20 +453,20 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 7px;
+  gap: var(--space-8);
+  margin-bottom: var(--space-8);
 }
 
 .batch-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(10px, 1fr));
-  gap: 3px;
+  gap: var(--space-4);
 }
 
 .batch-cell {
   height: 14px;
   border: 0;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: var(--faint);
   cursor: pointer;
 }
@@ -463,32 +500,27 @@
 
 .run-node-head {
   display: flex;
-  gap: 10px;
+  gap: var(--space-10);
   align-items: flex-start;
   justify-content: space-between;
-  padding-bottom: 9px;
+  padding-bottom: var(--space-10);
   border-bottom: 1px solid var(--line);
 }
 
 .run-node-head h3 {
-  margin: 1px 0 2px;
-  font-size: 14px;
+  margin: var(--space-2) 0 var(--space-2);
+  font-size: var(--text-lg);
   letter-spacing: -0.01em;
 }
 
 .run-node-head code {
   color: var(--muted);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
 }
 
 .event-row {
   width: 100%;
-  border: 0;
-  border-bottom: 1px solid var(--line);
-  background: transparent;
   color: var(--text);
-  text-align: left;
-  cursor: pointer;
 }
 
 .event-row.active {
@@ -502,21 +534,16 @@
 @media (max-width: 1080px) {
   .run-view {
     grid-template-columns: 1fr;
-    height: auto;
   }
 
   .run-canvas-panel {
     min-height: 520px;
   }
-
-  .run-dock {
-    max-height: 560px;
-  }
 }
 
 .json-paths {
-  margin-top: 8px;
-  font-size: 11.5px;
+  margin-top: var(--space-8);
+  font-size: var(--text-sm);
 }
 
 .json-paths summary {
@@ -526,7 +553,7 @@
 
 .json-paths ul {
   max-height: 180px;
-  margin: 6px 0 0;
+  margin: var(--space-6) 0 0;
   padding: 0;
   overflow: auto;
   list-style: none;
@@ -534,10 +561,10 @@
 
 .json-paths li {
   display: flex;
-  gap: 8px;
+  gap: var(--space-8);
   align-items: center;
   justify-content: space-between;
-  padding: 3px 0;
+  padding: var(--space-4) 0;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
 }
 
@@ -549,14 +576,14 @@
 
 .json-paths .icon-button {
   flex: none;
-  font-size: 10.5px;
+  font-size: var(--text-xs);
 }
 
 .run-log-toolbar {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  padding: 0 0 12px;
+  gap: var(--space-10);
+  padding: 0 0 var(--space-12);
 }
 
 .run-log-toolbar .field {
@@ -567,7 +594,7 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 4px;
+  gap: var(--space-4);
   min-width: 140px;
 }
 
@@ -587,14 +614,20 @@
 .run-log-actions {
   display: flex;
   align-items: flex-end;
-  gap: 10px;
+  gap: var(--space-10);
   margin-left: auto;
-  padding-bottom: 5px;
+  padding-bottom: var(--space-6);
 }
 
 .run-event-list {
   max-height: 520px;
   overflow: auto;
+}
+
+/* The raw log keeps a bounded default height; Expand lets a long run
+   unroll into the page instead of scrolling inside the dock. */
+.run-event-list.expanded {
+  max-height: none;
 }
 
 .template-view-page {
@@ -605,34 +638,38 @@
 .template-view-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 330px;
-  gap: 16px;
+  gap: var(--space-16);
   width: 100%;
   max-width: 1120px;
+  /* The side cards flow to their natural height and the page shell
+     owns the scroll — the layout no longer caps them at a
+     viewport-derived height. */
   min-height: 520px;
-  height: calc(100vh - 250px);
   margin: 0 auto;
 }
 
 .template-view-stage {
   min-width: 0;
   min-height: 0;
+  /* The canvas keeps a definite viewport-relative height so the
+     preview stays visible without capping the side column. */
+  height: calc(100vh - 250px);
+  min-height: 440px;
   overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: var(--canvas);
   box-shadow: var(--shadow-soft);
 }
 
 .template-view-side {
-  min-height: 0;
-  overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-soft);
 }
 
 .template-view-side .inspector-scroll {
-  padding-bottom: 20px;
+  padding-bottom: var(--space-20);
 }
 
 .canvas-readonly {
@@ -650,28 +687,28 @@
 .schedule-preview {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 10px 12px;
+  gap: var(--space-4);
+  padding: var(--space-10) var(--space-12);
   border: 1px solid var(--line);
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   background: var(--panel-2);
 }
 
 .retry-fields {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  gap: var(--space-8);
 }
 
 .schedule-preview ul {
   margin: 0;
-  padding-left: 18px;
+  padding-left: var(--space-18);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
 
 .schedule-preview li + li {
-  margin-top: 2px;
+  margin-top: var(--space-2);
 }
 
 @media (max-width: 900px) {
@@ -684,16 +721,8 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .template-view-layout {
-    height: auto;
-  }
-
   .template-view-stage {
     height: 440px;
-  }
-
-  .template-view-side {
-    max-height: none;
   }
 }
 
@@ -702,8 +731,7 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .run-detail-head,
-  .page-head {
+  .run-detail-head {
     align-items: flex-start;
     flex-direction: column;
   }
@@ -712,10 +740,14 @@
     justify-content: flex-start;
   }
 
+  /* Keep overflow menus inside the viewport. The settings trigger sits at
+     the right edge on phones; anchoring left pushed its 168px menu past
+     the viewport. */
   .settings-menu-list,
   .action-menu-list {
-    right: auto;
-    left: 0;
+    right: 0;
+    left: auto;
+    max-width: calc(100vw - 24px);
   }
 }
 
@@ -734,13 +766,13 @@
 .skel-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 0;
+  gap: var(--space-8);
+  padding: var(--space-10) 0;
 }
 
 .skel-row {
   height: 44px;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   background: linear-gradient(
     100deg,
     var(--faint) 30%,

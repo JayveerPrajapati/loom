@@ -14,7 +14,7 @@ interface HomeProps {
   onNew: () => void;
   onOpenTemplate: (id: string) => void;
   onUseExample: (example: Example) => void;
-  onOpenTemplates: () => void;
+  onOpenWorkflows: () => void;
   onOpenRuns: () => void;
   onOpenRun: (runId: string) => void;
 }
@@ -25,7 +25,7 @@ export function HomePage({
   onNew,
   onOpenTemplate,
   onUseExample,
-  onOpenTemplates,
+  onOpenWorkflows,
   onOpenRuns,
   onOpenRun,
 }: HomeProps) {
@@ -66,57 +66,79 @@ export function HomePage({
   const finished = (stats?.done ?? 0) + (stats?.failed ?? 0);
   const successRate =
     finished === 0 ? '—' : `${Math.round(((stats?.done ?? 0) / finished) * 100)}%`;
+  const firstRun = !loading && (stats?.total ?? 0) === 0 && summaries.length === 0;
 
   return (
     <main className="page-shell" id="main-stage" tabIndex={-1}>
       <section className="home-hero">
         <div>
-          <p className="eyebrow">Home</p>
           <h1>Build once. Run it as a job.</h1>
           <p className="lede">
-            Design reusable templates, then run them manually, on a schedule, or as a batch.
+            Design reusable workflows, then run them manually, on a schedule, or as a batch.
           </p>
         </div>
         <div className="home-hero-actions">
           <button className="button primary" onClick={onNew}>
             Blank workflow
           </button>
-          <button className="button subtle" onClick={onOpenTemplates}>
-            Browse templates
+          <button className="button subtle" onClick={onOpenWorkflows}>
+            Browse workflows
           </button>
         </div>
       </section>
 
-      <section className="dashboard-metrics" aria-label="Workspace summary">
-        <div className="dashboard-metric">
-          <span>Templates</span>
-          <strong>{summaries.length}</strong>
-          <em>Reusable flows</em>
-        </div>
-        <div className="dashboard-metric">
-          <span>Runs</span>
-          <strong>{stats?.total ?? runs.length}</strong>
-          <em>All recorded runs</em>
-        </div>
-        <div className="dashboard-metric">
-          <span>Active</span>
-          <strong>{(stats?.active ?? 0) + (stats?.waiting ?? 0)}</strong>
-          <em>Queued, running or waiting</em>
-        </div>
-        <div className="dashboard-metric">
-          <span>Success</span>
-          <strong className={finished > 0 && successRate === '100%' ? 'metric-strong-good' : undefined}>
-            {successRate}
-          </strong>
-          <em>Of finished runs</em>
-        </div>
-      </section>
+      {firstRun ? (
+        <section className="home-get-started" aria-label="Get started">
+          <div className="get-started-step">
+            <span className="get-started-num" aria-hidden="true">1</span>
+            <h2>Start from an example</h2>
+            <p>Open a working workflow, or begin from a blank canvas.</p>
+            <a className="button subtle" href="#home-examples">
+              See examples below
+            </a>
+          </div>
+          <div className="get-started-step">
+            <span className="get-started-num" aria-hidden="true">2</span>
+            <h2>Run it and watch</h2>
+            <p>Every run is recorded. Press Run in the editor and follow each step.</p>
+          </div>
+          <div className="get-started-step">
+            <span className="get-started-num" aria-hidden="true">3</span>
+            <h2>Make it a job</h2>
+            <p>Publish the workflow, then schedule it or run it as a batch.</p>
+          </div>
+        </section>
+      ) : (
+        <>
+          <section className="dashboard-metrics" aria-label="Workspace summary">
+            <div className="dashboard-metric">
+              <span>Workflows</span>
+              <strong>{summaries.length}</strong>
+              <em>Reusable flows</em>
+            </div>
+            <div className="dashboard-metric">
+              <span>Runs</span>
+              <strong>{stats?.total ?? runs.length}</strong>
+              <em>All recorded runs</em>
+            </div>
+            <div className="dashboard-metric">
+              <span>Active</span>
+              <strong>{(stats?.active ?? 0) + (stats?.waiting ?? 0)}</strong>
+              <em>Queued, running or waiting</em>
+            </div>
+            <div className="dashboard-metric">
+              <span>Success</span>
+              <strong className={finished > 0 && successRate === '100%' ? 'metric-strong-good' : undefined}>
+                {successRate}
+              </strong>
+              <em>Of finished runs</em>
+            </div>
+          </section>
 
-      <div className="dashboard-grid">
+          <div className="dashboard-grid">
         <section className="dashboard-panel">
           <header className="dashboard-panel-head">
             <div>
-              <p className="eyebrow">Execution</p>
               <h2>Recent runs</h2>
             </div>
             <button className="button subtle" onClick={onOpenRuns}>
@@ -136,14 +158,15 @@ export function HomePage({
           {!loading && runs.length > 0 && (
             <div className="dashboard-run-list">
               {runs.slice(0, 6).map((run) => (
-                <button className="dashboard-run-row" key={run.id} onClick={() => onOpenRun(run.id)}>
-                  <span className={`status-dot status-${run.status}`} aria-hidden="true" />
-                  <span className="dashboard-run-main">
-                    <strong>{names.get(run.workflowId) ?? run.workflowId}</strong>
-                    <span>
-                      {run.status} · {run.trigger} · {formatTime(run.startedAt)}
-                    </span>
+              <button className="dashboard-run-row" key={run.id} onClick={() => onOpenRun(run.id)}>
+                <span className="dashboard-run-main">
+                  <strong>{names.get(run.workflowId) ?? run.workflowId}</strong>
+                  <span className="meta-list">
+                    <span className={`status-text status-${run.status}`}>{run.status}</span>
+                    <span>{run.trigger}</span>
+                    <span>{formatTime(run.startedAt)}</span>
                   </span>
+                </span>
                   <span className="dashboard-run-meta">
                     <code>{run.id.split('_').pop()}</code>
                     <em>{duration(run)}</em>
@@ -157,10 +180,9 @@ export function HomePage({
         <section className="dashboard-panel">
           <header className="dashboard-panel-head">
             <div>
-              <p className="eyebrow">Library</p>
               <h2>Your templates</h2>
             </div>
-            <button className="button subtle" onClick={onOpenTemplates}>
+            <button className="button subtle" onClick={onOpenWorkflows}>
               Manage
             </button>
           </header>
@@ -176,25 +198,29 @@ export function HomePage({
               >
                 <span>
                   <strong>{summary.name}</strong>
-                  <em>
-                    {summary.publishedVersion ? `v${summary.publishedVersion}` : 'Draft'}
-                    {summary.draft && summary.publishedVersion ? ' · draft' : ''} ·{' '}
-                    {summary.jobCount ?? 0} job{summary.jobCount === 1 ? '' : 's'}
-                    {summary.activeJobCount ? ` (${summary.activeJobCount} active)` : ''} · updated{' '}
-                    {formatTime(summary.updatedAt)}
+                  <em className="meta-list">
+                    <span>
+                      {summary.publishedVersion ? `v${summary.publishedVersion}` : 'Draft'}
+                      {summary.draft && summary.publishedVersion ? ' draft' : ''}
+                    </span>
+                    <span>
+                      {summary.jobCount ?? 0} job{summary.jobCount === 1 ? '' : 's'}
+                      {summary.activeJobCount ? ` (${summary.activeJobCount} active)` : ''}
+                    </span>
+                    <span>Updated {formatTime(summary.updatedAt)}</span>
                   </em>
                 </span>
-                <span aria-hidden="true">→</span>
               </button>
             ))}
           </div>
         </section>
       </div>
+        </>
+      )}
 
-      <section className="home-examples">
+      <section className="home-examples" id="home-examples">
         <header className="dashboard-panel-head">
           <div>
-            <p className="eyebrow">Start here</p>
             <h2>Example templates</h2>
           </div>
         </header>
@@ -205,10 +231,9 @@ export function HomePage({
               className="example-card"
               onClick={() => onUseExample(example)}
             >
-              <span className="eyebrow">Example</span>
               <strong>{example.name}</strong>
               <span className="example-meta">
-                {nodeCount(example)} · {example.workflow.edges.length} edges
+                {nodeCount(example)}, {example.workflow.edges.length} edges
               </span>
               <span className="example-trigger">{triggerName(example)}</span>
             </button>

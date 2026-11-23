@@ -21,7 +21,8 @@ export function NodePanel({ defs, onAdd, onDragStart }: Props) {
   const groups = useMemo(() => {
     const filtered = defs.filter((def) => {
       if (!query.trim()) return true;
-      const haystack = `${def.type} ${def.category} ${def.description}`.toLowerCase();
+      // Search spans name, type, category, and description.
+      const haystack = `${defaultNodeName(def)} ${def.type} ${def.category} ${def.description}`.toLowerCase();
       return haystack.includes(query.trim().toLowerCase());
     });
     const byCategory = new Map<string, NodeDef[]>();
@@ -34,12 +35,12 @@ export function NodePanel({ defs, onAdd, onDragStart }: Props) {
       (a, b) => CATEGORY_ORDER.indexOf(a[0]) - CATEGORY_ORDER.indexOf(b[0]),
     );
   }, [defs, query]);
+  const searching = query.trim().length > 0;
 
   return (
     <aside className="panel nodes-panel" aria-label="Node library">
       <div className="panel-head">
         <div>
-          <p className="eyebrow">Library</p>
           <h2>Nodes</h2>
         </div>
         <span className="count-pill">{defs.length}</span>
@@ -57,8 +58,14 @@ export function NodePanel({ defs, onAdd, onDragStart }: Props) {
       <div className="node-list">
         {groups.length === 0 && <p className="muted small pad">No nodes match “{query}”.</p>}
         {groups.map(([category, items]) => (
-          <section key={category} className="node-group">
-            <h3>{CATEGORY_LABEL[category] ?? category}</h3>
+          // Secondary categories start collapsed so every category header
+          // fits the panel without scrolling; a search opens everything it
+          // matched. Triggers — the primary category — stays open.
+          <details key={category} className="node-group" open={searching || category === 'trigger'}>
+            <summary>
+              <h3>{CATEGORY_LABEL[category] ?? category}</h3>
+              <span className="count-pill">{items.length}</span>
+            </summary>
             {items.map((def) => (
               <button
                 key={def.type}
@@ -82,7 +89,7 @@ export function NodePanel({ defs, onAdd, onDragStart }: Props) {
                 </span>
               </button>
             ))}
-          </section>
+          </details>
         ))}
       </div>
       <p className="panel-foot">Drag a node onto the canvas, or click to add it.</p>

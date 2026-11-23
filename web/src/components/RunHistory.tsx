@@ -1,46 +1,14 @@
+import { AssetLoadingState } from './assets/AssetState';
+import { ActionError } from './assets/ActionError';
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import { confirmAction } from '../confirm';
 import type { ReplayResult, Run, RunDiff, RunEvent } from '../types';
+import { useDialogFocus } from '../useDialogFocus';
 
-function formatTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(date);
-}
-
-function duration(run: Run): string {
-  if (!run.finishedAt) return '—';
-  const ms = Date.parse(run.finishedAt) - Date.parse(run.startedAt);
-  if (!Number.isFinite(ms) || ms < 0) return '—';
-  if (ms < 1000) return `${ms} ms`;
-  return `${(ms / 1000).toFixed(1)} s`;
-}
-
-function durationLabel(value?: number): string {
-  if (value == null) return '—';
-  if (value < 1000) return `${value} ms`;
-  return `${(value / 1000).toFixed(1)} s`;
-}
-
-function pretty(value: unknown): string {
-  if (value === undefined) return '—';
-  try {
-    return JSON.stringify(value, null, 2) ?? String(value);
-  } catch {
-    return String(value);
-  }
-}
-
-function traceData(event: RunEvent | null, key: 'request' | 'response'): unknown {
-  const data = event?.data;
-  if (!data || typeof data !== 'object') return undefined;
-  return (data as Record<string, unknown>)[key];
-}
+import { formatTime, duration, traceData } from './runHistory/helpers';
+import { HistoryEventDetail } from './runHistory/HistoryEventDetail';
+import { RunDiffView } from './runHistory/RunDiffView';
 
 interface Props {
   open: boolean;
@@ -53,8 +21,14 @@ interface Props {
 }
 
 export function RunHistory({ open, workflowId, currentRunId, onClose, onView, onUpdate, onOpenRun }: Props) {
+  const dialogRef = useDialogFocus<HTMLDivElement>(open, onClose);
   const [runs, setRuns] = useState<Run[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [total, setTotal] = useState(0);
+  const [nextCursor, setNextCursor] = useState('');
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<string | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
@@ -76,18 +50,46 @@ export function RunHistory({ open, workflowId, currentRunId, onClose, onView, on
   const [children, setChildren] = useState<Run[]>([]);
   const [childrenLoading, setChildrenLoading] = useState(false);
 
-  const load = () => {
-    setLoading(true);
+  const loadRuns = (cursor = '') => {
+    if (cursor === '') setLoading(true);
+    else setLoadingMore(true);
     setError('');
     api
-      .listRuns(workflowId, 50)
+      .listRuns(workflowId, 50, {
+        q: search.trim() || undefined,
+        status: statusFilter || undefined,
+        cursor: cursor || undefined,
+      })
       .then((result) => {
-        setRuns(result.runs ?? []);
-        setSelected((current) => current ?? result.runs?.[0]?.id ?? null);
+        const next = result.runs ?? [];
+        setTotal(result.count ?? next.length);
+        setNextCursor(result.nextCursor ?? '');
+        setRuns((current) =>
+          cursor === ''
+            ? next
+            : [...current, ...next.filter((run) => !current.some((seen) => seen.id === run.id))],
+        );
+        if (cursor === '') {
+          setSelected((current) =>
+            current && next.some((run) => run.id === current) ? current : next[0]?.id ?? null,
+          );
+        }
       })
       .catch((err: Error) => setError(err.message))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        setLoading(false);
+        setLoadingMore(false);
+      });
   };
+
+  const load = () => loadRuns();
+
+  useEffect(() => {
+    if (!open) return;
+    const timer = window.setTimeout(() => loadRuns(), 250);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, statusFilter]);
 
   useEffect(() => {
     if (!open) return;
@@ -200,11 +202,17 @@ export function RunHistory({ open, workflowId, currentRunId, onClose, onView, on
 
   const replayNode = async (mode: 'step' | 'from') => {
     if (!selected || !detailEvent?.nodeId || replay.busy) return;
-    const prompt =
-      mode === 'from'
-        ? 'Re-run this node and every downstream node as a new run? Side effects will repeat.'
-        : 'Re-run this node in place? Side effects will repeat and the original run log is unchanged.';
-    if (!window.confirm(prompt)) return;
+    const confirmed = await confirmAction({
+      title: mode === 'from' ? 'Re-run from this node?' : 'Re-run this node?',
+      body:
+        mode === 'from'
+          ? 'Re-runs this node and every downstream node as a new run. Side effects will repeat.'
+          : 'Re-runs this node in place. Side effects will repeat and the original run log is unchanged.',
+      confirmLabel: mode === 'from' ? 'Re-run downstream' : 'Re-run node',
+      cancelLabel: 'Cancel',
+      tone: 'primary',
+    });
+    if (!confirmed) return;
     setReplay({ busy: true });
     try {
       const result = await api.replayRun(selected, mode, detailEvent.nodeId);
@@ -236,22 +244,28 @@ export function RunHistory({ open, workflowId, currentRunId, onClose, onView, on
   }, [open, onClose]);
 
   if (!open) return null;
-  const current = runs.find((run) => run.id === selected) ?? null;
-  const finishedNodes = new Set(events.filter((event) => event.type === 'node.finished').map((event) => event.nodeId)).size;
+  const current = runs.find((run) => run.id === selected) ?? null;  const finishedNodes = new Set(events.filter((event) => event.type === 'node.finished').map((event) => event.nodeId)).size;
   const failedNodes = new Set(events.filter((event) => event.type === 'node.failed').map((event) => event.nodeId)).size;
   const request = traceData(detailEvent, 'request');
   const response = traceData(detailEvent, 'response');
 
   return (
-    <div className="overlay" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div className="history-panel" role="dialog" aria-modal="true" aria-label="Run history">
+    <div className="overlay" onClick={onClose}>
+      <section
+        ref={dialogRef}
+        className="dialog history-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Run history"
+        tabIndex={-1}
+        onClick={(event) => event.stopPropagation()}
+      >
         <header className="history-head">
           <div>
-            <p className="eyebrow">Execution</p>
             <h2>Run history</h2>
           </div>
-          <div className="row-actions">
-            <button className="button subtle" onClick={load} disabled={loading}>
+          <div className="history-head-actions">
+            <button className="button subtle" onClick={load} disabled={loading} aria-label="Refresh runs">
               Refresh
             </button>
             <button className="icon-button" onClick={onClose} aria-label="Close run history">
@@ -262,11 +276,38 @@ export function RunHistory({ open, workflowId, currentRunId, onClose, onView, on
           </div>
         </header>
 
-        {error && <p className="banner error">{error}</p>}
+        {error && <ActionError>{error}</ActionError>}
 
         <div className="history-body">
           <div className="history-list">
-            {loading && <p className="muted small pad">Loading runs…</p>}
+            <div className="history-filters">
+              <input
+                className="text-input"
+                type="search"
+                placeholder="Search run id or error"
+                aria-label="Search runs"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+              <select
+                className="text-input"
+                aria-label="Filter by status"
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value)}
+              >
+                <option value="">All statuses</option>
+                <option value="waiting">Waiting</option>
+                <option value="running">Running</option>
+                <option value="done">Done</option>
+                <option value="failed">Failed</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+              <span className="muted small history-count">
+                {total} run{total === 1 ? '' : 's'}
+              </span>
+            </div>
+            <div className="history-scroll">
+            {loading && <AssetLoadingState label="Loading runs…" />}
             {!loading && runs.length === 0 && <p className="muted small pad">No runs yet. Press Run to start one.</p>}
             {runs.map((run) => (
               <button
@@ -276,19 +317,29 @@ export function RunHistory({ open, workflowId, currentRunId, onClose, onView, on
                 }`}
                 onClick={() => setSelected(run.id)}
               >
-                <span className={`status-dot status-${run.status}`} aria-hidden="true" />
                 <span className="history-row-main">
-                  <strong>{run.status}</strong>
-                  <span>
-                    {run.trigger} · {formatTime(run.startedAt)}
+                  <strong className={`status-text status-${run.status}`}>{run.status}</strong>
+                  <span className="meta-list">
+                    <span>{run.trigger}</span>
                   </span>
                 </span>
                 <span className="history-row-meta">
-                  <code>{run.id.split('_').pop()}</code>
+                  <em>{formatTime(run.startedAt)}</em>
+                  <code title={run.id.split('_').pop()}>{run.id.split('_').pop()}</code>
                   <em>{duration(run)}</em>
                 </span>
               </button>
             ))}
+            {!loading && runs.length < total && nextCursor !== '' && (
+              <button
+                className="button subtle history-more"
+                onClick={() => loadRuns(nextCursor)}
+                disabled={loadingMore}
+              >
+                {loadingMore ? 'Loading…' : `Load more (${total - runs.length} left)`}
+              </button>
+            )}
+            </div>
           </div>
 
           <div className="history-detail">
@@ -318,12 +369,14 @@ export function RunHistory({ open, workflowId, currentRunId, onClose, onView, on
                       {finishedNodes} finished{failedNodes > 0 ? ` · ${failedNodes} failed` : ''}
                     </strong>
                   </div>
-                  <div>
+                  <div className="history-summary-run">
                     <span className="field-label">Run</span>
-                    <strong><code>{current.id}</code></strong>
+                    <strong title={current.id}>
+                      <code>{current.id}</code>
+                    </strong>
                   </div>
                 </div>
-                {current.error && <p className="banner error">{current.error}</p>}
+                {current.error && <ActionError>{current.error}</ActionError>}
                 {current.parentRunId && (
                   <div className="run-link-row">
                     <span className="field-label">Child run</span>
@@ -335,7 +388,7 @@ export function RunHistory({ open, workflowId, currentRunId, onClose, onView, on
                     </button>
                   </div>
                 )}
-                {childrenLoading && <p className="muted small">Loading child runs…</p>}
+                {childrenLoading && <AssetLoadingState label="Loading child runs…" className="muted small" />}
                 {children.length > 0 && (
                   <div className="child-runs" role="region" aria-label="Child runs">
                     <div className="child-runs-head">
@@ -349,15 +402,15 @@ export function RunHistory({ open, workflowId, currentRunId, onClose, onView, on
                         onClick={() => onOpenRun(child.id)}
                         aria-label={`Open child run ${child.id}`}
                       >
-                        <span className={`status-dot status-${child.status}`} aria-hidden="true" />
-                        <span className="child-run-main">
-                          <strong>{child.workflowId}</strong>
-                          <span className="muted small">
-                            {child.parentNodeId || 'subflow'} · {formatTime(child.startedAt)}
-                          </span>
-                        </span>
+              <span className="child-run-main">
+                <strong>{child.workflowId}</strong>
+                <span className="muted small meta-list">
+                  <span>{child.parentNodeId || 'subflow'}</span>
+                  <span>{formatTime(child.startedAt)}</span>
+                </span>
+              </span>
                         <span className="child-run-meta">
-                          <em>{child.status}</em>
+                          <em className={`status-text status-${child.status}`}>{child.status}</em>
                           <code>{child.id.split('_').pop()}</code>
                         </span>
                       </button>
@@ -384,73 +437,10 @@ export function RunHistory({ open, workflowId, currentRunId, onClose, onView, on
                   </label>
                   {diffLoading && <span className="muted small">Comparing…</span>}
                 </div>
-                {diffError && <p className="banner error">{diffError}</p>}
-                {diff && (
-                  <div className="run-diff" role="region" aria-label="Run diff">
-                    <div className="run-diff-head">
-                      <strong>{diff.changed ? `${diff.changed} changed` : 'No differences'}</strong>
-                      <span className="muted small">{diff.nodes.length} nodes compared</span>
-                    </div>
-                    <div className="diff-rows">
-                      {diff.nodes.map((node) => {
-                        const changed =
-                          !node.inputMatch ||
-                          !node.outputMatch ||
-                          node.baseStatus !== node.againstStatus;
-                        return (
-                          <details
-                            key={node.nodeId}
-                            className={`diff-row ${changed ? 'diff-changed' : ''}`}
-                          >
-                            <summary>
-                              <span className="diff-node">
-                                <strong>{node.name || node.nodeId}</strong>
-                                <code>{node.nodeId}</code>
-                              </span>
-                              <span className="diff-statuses">
-                                {node.baseStatus || 'missing'} → {node.againstStatus || 'missing'}
-                              </span>
-                              <span className="diff-durations">
-                                {durationLabel(node.baseDurationMs)} →{' '}
-                                {durationLabel(node.againstDurationMs)}
-                              </span>
-                              <span className={`diff-badge ${node.inputMatch ? 'same' : 'changed'}`}>
-                                input {node.inputMatch ? 'same' : 'changed'}
-                              </span>
-                              <span className={`diff-badge ${node.outputMatch ? 'same' : 'changed'}`}>
-                                output {node.outputMatch ? 'same' : 'changed'}
-                              </span>
-                            </summary>
-                            <div className="diff-detail">
-                              <div className="diff-outputs">
-                                <div>
-                                  <span className="field-label">Base output</span>
-                                  <pre className="json-view">{pretty(node.baseOutput)}</pre>
-                                </div>
-                                <div>
-                                  <span className="field-label">Compared output</span>
-                                  <pre className="json-view">{pretty(node.againstOutput)}</pre>
-                                </div>
-                              </div>
-                              <div className="diff-hashes">
-                                <span>
-                                  input: <code>{node.baseInputHash || '—'}</code> →{' '}
-                                  <code>{node.againstInputHash || '—'}</code>
-                                </span>
-                                <span>
-                                  output: <code>{node.baseOutputHash || '—'}</code> →{' '}
-                                  <code>{node.againstOutputHash || '—'}</code>
-                                </span>
-                              </div>
-                            </div>
-                          </details>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
+                {diffError && <ActionError>{diffError}</ActionError>}
+                {diff && <RunDiffView diff={diff} />}
                 <div className="event-list">
-                  {eventsLoading && <p className="muted small">Loading events…</p>}
+                  {eventsLoading && <AssetLoadingState label="Loading events…" className="muted small" />}
                   {!eventsLoading && events.length === 0 && <p className="muted small">No events recorded.</p>}
                   {events.map((event) => (
                     <div className={`event-row event-${event.type.replace('.', '-')}`} key={`${event.seq}-${event.type}`}>
@@ -478,117 +468,31 @@ export function RunHistory({ open, workflowId, currentRunId, onClose, onView, on
                   ))}
                 </div>
                 {detailEvent && (
-                  <div className="event-detail" role="region" aria-label="Step data">
-                    <div className="event-detail-head">
-                      <div>
-                        <strong>{detailEvent.type}</strong>
-                        {detailEvent.nodeId && <span className="event-node">{detailEvent.nodeId}</span>}
-                      </div>
-                      <button
-                        className="icon-button"
-                        onClick={() => setDetailEvent(null)}
-                        aria-label="Close step data"
-                      >
-                        ×
-                      </button>
-                    </div>
-                    {detail.loading && <p className="muted small">Loading data…</p>}
-                    {detail.error && <p className="banner error">{detail.error}</p>}
-                    {!detail.loading &&
-                      !detail.error &&
-                      detail.input === undefined &&
-                      detail.output === undefined &&
-                      request === undefined &&
-                      response === undefined && (
-                        <p className="muted small">No data recorded for this step.</p>
-                      )}
-                    {request !== undefined && (
-                      <div className="event-detail-block">
-                        <span className="field-label">Request</span>
-                        <pre className="json-view">{pretty(request)}</pre>
-                      </div>
-                    )}
-                    {response !== undefined && (
-                      <div className="event-detail-block">
-                        <span className="field-label">Response</span>
-                        <pre className="json-view">{pretty(response)}</pre>
-                      </div>
-                    )}
-                    {detail.input !== undefined && (
-                      <div className="event-detail-block">
-                        <span className="field-label">Input item</span>
-                        <pre className="json-view">{pretty(detail.input)}</pre>
-                      </div>
-                    )}
-                    {detail.output !== undefined && (
-                      <div className="event-detail-block">
-                        <span className="field-label">Output item</span>
-                        <pre className="json-view">{pretty(detail.output)}</pre>
-                      </div>
-                    )}
-                    {(detailEvent.type === 'node.finished' || detailEvent.type === 'node.failed') &&
-                      detailEvent.nodeId && (
-                        <div className="event-detail-actions">
-                          {detailEvent.type === 'node.finished' && (
-                            <button
-                              type="button"
-                              className="button subtle"
-                              onClick={() => void replayNode('step')}
-                              disabled={replay.busy}
-                            >
-                              Replay step
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            className={`button ${detailEvent.type === 'node.failed' ? 'primary' : 'subtle'}`}
-                            onClick={() => void replayNode('from')}
-                            disabled={replay.busy}
-                          >
-                            {detailEvent.type === 'node.failed' ? 'Retry from failed node' : 'Replay from here'}
-                          </button>
-                        </div>
-                      )}
-                    {replay.busy && <p className="muted small">Replaying…</p>}
-                    {replay.error && <p className="banner error">{replay.error}</p>}
-                    {replay.result && (
-                      <div
-                        className={`replay-result ${
-                          replay.result.mode === 'step'
-                            ? replay.result.match
-                              ? 'match'
-                              : 'diverge'
-                            : ''
-                        }`}
-                      >
-                        <strong>
-                          {replay.result.mode === 'step'
-                            ? replay.result.match
-                              ? 'Step replay matched the recorded output.'
-                              : 'Step replay diverged from the recorded output.'
-                            : `Replay from ${replay.result.nodeId ?? 'node'}: ${replay.result.status} · new run ${replay.result.runId.split('_').pop()}`}
-                        </strong>
-                        {replay.result.mode === 'step' && (
-                          <span className="replay-hashes">
-                            <code>{replay.result.recordedHash ?? '—'}</code>
-                            {' → '}
-                            <code>{replay.result.actualHash ?? '—'}</code>
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
+                  <HistoryEventDetail
+                    detailEvent={detailEvent}
+                    detail={detail}
+                    request={request}
+                    response={response}
+                    replay={replay}
+                    onDetailEventChange={setDetailEvent}
+                    onReplayNode={(mode) => void replayNode(mode)}
+                  />
                 )}
-                <div className="history-footer">
-                  <button className="button primary" onClick={() => onView(current, events)}>
-                    View this run on the canvas
-                  </button>
-                </div>
               </>
             )}
           </div>
         </div>
-      </div>
+
+        <footer className="dialog-actions history-footer">
+          {current ? (
+            <button className="button primary" onClick={() => onView(current, events)}>
+              Open on canvas
+            </button>
+          ) : (
+            <span className="muted small">Select a run to open it on the canvas.</span>
+          )}
+        </footer>
+      </section>
     </div>
   );
 }

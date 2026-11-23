@@ -7,9 +7,12 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "preview": "vite preview",
-    "e2e": "npm run build && playwright test",
-    "e2e:only": "playwright test",
+    "e2e": "npm run build && npm run e2e:main && npm run e2e:isolated",
+    "e2e:only": "npm run e2e:main && npm run e2e:isolated",
+    "e2e:main": "playwright test --grep-invert @isolated",
+    "e2e:isolated": "LOOM_E2E_ISOLATED=1 playwright test --grep @isolated",
     "e2e:install": "playwright install chromium"
   },
   "dependencies": {
@@ -24,6 +27,7 @@
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "^5.7.3",
-    "vite": "^6.0.7"
+    "vite": "^6.0.7",
+    "vitest": "^5.1.0"
   }
 }

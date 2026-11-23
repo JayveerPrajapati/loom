@@ -1,3 +1,5 @@
+import { AssetLoadingState } from './assets/AssetState';
+import { ActionError } from './assets/ActionError';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { defaultNodeName } from '../catalog';
@@ -92,9 +94,8 @@ export function TemplateViewPage({
       <header className="page-head">
         <div>
           <button className="breadcrumb-button" onClick={onBack}>
-            ← Templates
+            ← Workflows
           </button>
-          <p className="eyebrow">Template</p>
           <h1>{workflow.name}</h1>
           <p className="lede">
             {published ? `Published v${published}` : 'Draft'}
@@ -115,7 +116,7 @@ export function TemplateViewPage({
         </div>
       </header>
 
-      {error && <p className="banner error">{error}</p>}
+      {error && <ActionError>{error}</ActionError>}
 
       <div className="template-view-layout">
         <section className="stage template-view-stage" aria-label="Workflow preview">
@@ -138,7 +139,6 @@ export function TemplateViewPage({
         <aside className="panel template-view-side">
           <div className="panel-head">
             <div>
-              <p className="eyebrow">{selectedNode ? 'Node' : 'Overview'}</p>
               <h2>
                 {selectedNode
                   ? selectedNode.name || defaultNodeName(selectedDef ?? ({ type: selectedNode.type } as NodeDef))
@@ -174,12 +174,12 @@ export function TemplateViewPage({
                 </div>
                 {trigger && (
                   <div className="callout">
-                    <p className="eyebrow">Trigger</p>
+                    <p className="field-label">Trigger</p>
                     <strong>{trigger.name || trigger.type}</strong>
                     <span>
                       {String(
-                        trigger.config.path ??
-                          trigger.config.schedule ??
+                        trigger.config?.path ??
+                          trigger.config?.schedule ??
                           trigger.type.replace('trigger.', ''),
                       )}
                     </span>
@@ -233,15 +233,17 @@ export function TemplateViewPage({
 
             <section className="inspector-section">
               <h3>Recent runs</h3>
-              {loading && <p className="muted small">Loading runs…</p>}
+              {loading && <AssetLoadingState label="Loading runs…" className="muted small" />}
               {!loading && runs.length === 0 && <p className="muted small">No runs yet.</p>}
               {runs.map((run) => (
-                <button className="runs-row" key={run.id} onClick={() => onOpenRun(run.id)}>
-                  <span className={`status-dot status-${run.status}`} aria-hidden="true" />
-                  <span className="runs-row-main">
-                    <strong>{run.status}</strong>
-                    <span>{run.trigger} · {formatTime(run.startedAt)}</span>
-                  </span>
+            <button className="runs-row" key={run.id} onClick={() => onOpenRun(run.id)}>
+              <span className="runs-row-main">
+                <strong>{run.status}</strong>
+                <span className="meta-list">
+                  <span>{run.trigger}</span>
+                  <span>{formatTime(run.startedAt)}</span>
+                </span>
+              </span>
                   <span className="runs-row-meta">
                     <code>{run.id.split('_').pop()}</code>
                     <em>{duration(run)}</em>

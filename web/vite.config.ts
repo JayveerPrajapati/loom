@@ -23,7 +23,18 @@ export default defineConfig({
             if (id.includes('react') || id.includes('scheduler')) {
               return 'vendor-react';
             }
+            return undefined;
           }
+          // The asset kit is dependency-free (type-only imports), so it can
+          // live in its own cacheable chunk without a circular chunk edge.
+          // ConfirmActionDialog is excluded because it imports the dialog hook.
+          if (
+            id.includes('/src/components/assets/') &&
+            !id.includes('/ConfirmActionDialog.tsx')
+          ) {
+            return 'app-asset-kit';
+          }
+          return undefined;
         },
       },
     },

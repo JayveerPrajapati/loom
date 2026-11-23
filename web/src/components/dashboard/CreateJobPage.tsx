@@ -1,3 +1,4 @@
+import { ActionError } from '../assets/ActionError';
 import { useEffect, useState } from 'react';
 import { api } from '../../api';
 import type { WorkflowSummary, WorkflowVersion } from '../../types';
@@ -15,10 +16,10 @@ interface CreateJobProps {
   summaries: WorkflowSummary[];
   onCreated: (id: string) => void;
   onCancel: () => void;
-  onOpenTemplates: () => void;
+  onOpenWorkflows: () => void;
 }
 
-export function CreateJobPage({ summaries, onCreated, onCancel, onOpenTemplates }: CreateJobProps) {
+export function CreateJobPage({ summaries, onCreated, onCancel, onOpenWorkflows }: CreateJobProps) {
   const published = summaries.filter((summary) => summary.publishedVersion > 0);
   const [templateId, setTemplateId] = useState(published[0]?.id ?? '');
   const [versions, setVersions] = useState<WorkflowVersion[]>([]);
@@ -66,7 +67,7 @@ export function CreateJobPage({ summaries, onCreated, onCancel, onOpenTemplates 
 
   const create = async () => {
     if (!template || version <= 0) {
-      setError('Choose a published template version.');
+      setError('Choose a published workflow version.');
       return;
     }
     let inputDefaults: Record<string, unknown>;
@@ -122,15 +123,14 @@ export function CreateJobPage({ summaries, onCreated, onCancel, onOpenTemplates 
       <main className="page-shell" id="main-stage" tabIndex={-1}>
         <header className="page-head">
           <div>
-            <p className="eyebrow">Deploy</p>
             <h1>Create a job</h1>
-            <p className="lede">A job needs a published template version.</p>
+            <p className="lede">A job needs a published workflow version.</p>
           </div>
         </header>
         <div className="empty-panel">
-          <h2>No published templates yet</h2>
-          <p className="muted">Publish a template before deploying a job.</p>
-          <button className="button primary" onClick={onOpenTemplates}>Browse templates</button>
+          <h2>No published workflows yet</h2>
+          <p className="muted">Publish a workflow before deploying a job.</p>
+          <button className="button primary" onClick={onOpenWorkflows}>Browse workflows</button>
         </div>
       </main>
     );
@@ -140,26 +140,24 @@ export function CreateJobPage({ summaries, onCreated, onCancel, onOpenTemplates 
     <main className="page-shell" id="main-stage" tabIndex={-1}>
       <header className="page-head">
         <div>
-          <p className="eyebrow">Deploy</p>
           <h1>Create a job</h1>
           <p className="lede">Pin a published version, then run it manually, on a schedule, or once.</p>
         </div>
         <button className="button subtle" onClick={onCancel}>Cancel</button>
       </header>
 
-      {error && <p className="banner error">{error}</p>}
+      {error && <ActionError>{error}</ActionError>}
 
       <div className="job-create-layout">
         <section className="dashboard-panel job-form">
           <header className="dashboard-panel-head">
             <div>
-              <p className="eyebrow">Step 1</p>
-              <h2>Template version</h2>
+              <h2>Step 1: Workflow version</h2>
             </div>
           </header>
           <div className="field-stack">
             <label className="field" htmlFor="job-template">
-              <span className="field-label">Published template</span>
+              <span className="field-label">Published workflow</span>
               <select
                 id="job-template"
                 className="text-input"
@@ -197,8 +195,7 @@ export function CreateJobPage({ summaries, onCreated, onCancel, onOpenTemplates 
         <section className="dashboard-panel job-form">
           <header className="dashboard-panel-head">
             <div>
-              <p className="eyebrow">Step 2</p>
-              <h2>Configuration</h2>
+              <h2>Step 2: Configuration</h2>
             </div>
           </header>
           <div className="field-stack">
