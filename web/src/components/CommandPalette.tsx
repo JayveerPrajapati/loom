@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useDialogFocus } from '../useDialogFocus';
 
 export interface Command {
   id: string;
   label: string;
   hint?: string;
+  /** Longer one-line explanation (e.g. a node type's description). */
+  description?: string;
   group: string;
   run: () => void;
 }
@@ -18,6 +21,7 @@ export function CommandPalette({ open, commands, onClose }: Props) {
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const paletteRef = useDialogFocus<HTMLDivElement>(open, onClose);
   const listRef = useRef<HTMLDivElement>(null);
 
   const filtered = useMemo(() => {
@@ -83,7 +87,7 @@ export function CommandPalette({ open, commands, onClose }: Props) {
   let flatIndex = -1;
   return (
     <div className="overlay palette-overlay" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div className="palette" role="dialog" aria-modal="true" aria-label="Command palette" onKeyDown={onKeyDown}>
+      <div ref={paletteRef} className="palette" role="dialog" aria-modal="true" aria-label="Command palette" onKeyDown={onKeyDown}>
         <div className="palette-input-wrap">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.7">
             <circle cx="11" cy="11" r="6.5" />
@@ -91,6 +95,7 @@ export function CommandPalette({ open, commands, onClose }: Props) {
           </svg>
           <input
             ref={inputRef}
+            data-autofocus
             className="palette-input"
             value={query}
             placeholder="Search actions, nodes, and workflows"
@@ -117,7 +122,12 @@ export function CommandPalette({ open, commands, onClose }: Props) {
                     onMouseMove={() => setActive(index)}
                     onClick={() => run(command)}
                   >
-                    <span>{command.label}</span>
+                    <span className="palette-row-main">
+                      <span>{command.label}</span>
+                      {command.description && (
+                        <span className="palette-row-desc">{command.description}</span>
+                      )}
+                    </span>
                     {command.hint && <kbd>{command.hint}</kbd>}
                   </button>
                 );

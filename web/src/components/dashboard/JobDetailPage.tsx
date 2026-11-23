@@ -1,5 +1,8 @@
-import { useEffect, useState } from 'react';
+import { AssetLoadingState } from '../assets/AssetState';
+import { ActionError } from '../assets/ActionError';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../../api';
+import { confirmAction } from '../../confirm';
 import type {
   Job,
   Run,
@@ -7,22 +10,11 @@ import type {
   WorkflowSummary,
   WorkflowVersion,
 } from '../../types';
-import {
-  BatchRunRow,
-  COMMON_TIMEZONES,
-  CRON_PRESETS,
-  SchedulePreviewPanel,
-  WorkflowDiffBadges,
-  cronPresetFor,
-  duration,
-  formatTime,
-  localTimezone,
-  nextRunLabel,
-  parseJSONObject,
-  schedulePreviewConfig,
-  toDateTimeLocal,
-  triggerLabel,
-} from './shared';
+import { cronPresetFor, localTimezone, parseJSONObject, schedulePreviewConfig, toDateTimeLocal, triggerLabel } from './shared';
+import { BatchRunDialog } from './jobDetail/BatchRunDialog';
+import { JobPinnedVersionPanel } from './jobDetail/JobPinnedVersionPanel';
+import { JobRunsPanel } from './jobDetail/JobRunsPanel';
+import { JobSettingsPanel } from './jobDetail/JobSettingsPanel';
 
 interface JobDetailProps {
   jobId: string;
@@ -34,6 +26,7 @@ interface JobDetailProps {
   onOpenTemplate: (id: string) => void;
   onOpenRun: (runId: string) => void;
   onOpenJob: (id: string) => void;
+  onNotify?: (message: string, tone?: 'info' | 'error') => void;
 }
 
 export function JobDetailPage({
@@ -46,6 +39,7 @@ export function JobDetailPage({
   onOpenTemplate,
   onOpenRun,
   onOpenJob,
+  onNotify,
 }: JobDetailProps) {
   const [job, setJob] = useState<Job | null>(null);
   const [versions, setVersions] = useState<WorkflowVersion[]>([]);
@@ -64,10 +58,19 @@ export function JobDetailPage({
   const [runAt, setRunAt] = useState('');
   const [maxConcurrency, setMaxConcurrency] = useState('');
   const [showBatch, setShowBatch] = useState(false);
-  const [batchText, setBatchText] = useState('');
-  const [batchConcurrency, setBatchConcurrency] = useState(3);
-  const [batchBusy, setBatchBusy] = useState(false);
-  const [batchError, setBatchError] = useState('');
+  const dirtyRef = useRef(false);
+
+  const applyForm = (source: Job) => {
+    setName(source.name);
+    setInputText(JSON.stringify(source.inputDefaults ?? {}, null, 2));
+    setTriggerType(source.triggerType || 'manual');
+    const nextSchedule = String(source.triggerConfig?.schedule ?? '0 9 * * *');
+    setSchedule(nextSchedule);
+    setCronPreset(cronPresetFor(nextSchedule));
+    setTimezone(String(source.triggerConfig?.timezone ?? localTimezone()));
+    setRunAt(toDateTimeLocal(String(source.triggerConfig?.runAt ?? '')));
+    setMaxConcurrency(String(source.triggerConfig?.maxConcurrency ?? ''));
+  };
 
   const load = async () => {
     setLoading(true);
@@ -97,21 +100,19 @@ export function JobDetailPage({
               .catch(() => null)
           : templateResult,
       );
-      setName(nextJob.name);
-      setInputText(JSON.stringify(nextJob.inputDefaults ?? {}, null, 2));
-      setTriggerType(nextJob.triggerType || 'manual');
-      const nextSchedule = String(nextJob.triggerConfig?.schedule ?? '0 9 * * *');
-      setSchedule(nextSchedule);
-      setCronPreset(cronPresetFor(nextSchedule));
-      setTimezone(String(nextJob.triggerConfig?.timezone ?? localTimezone()));
-      setRunAt(toDateTimeLocal(String(nextJob.triggerConfig?.runAt ?? '')));
-      setMaxConcurrency(String(nextJob.triggerConfig?.maxConcurrency ?? ''));
+      if (!dirtyRef.current) {
+        applyForm(nextJob);
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    dirtyRef.current = false;
+  }, [jobId]);
 
   useEffect(() => {
     void load();
@@ -131,48 +132,13 @@ export function JobDetailPage({
     }
   };
 
-  const startBatch = async () => {
-    if (!job) return;
-    const text = batchText.trim();
-    if (!text) {
-      setBatchError('Paste a JSON array or CSV with a header row.');
-      return;
-    }
-    let payload: { items?: unknown[]; csv?: string; concurrency: number };
-    if (text.startsWith('[')) {
-      try {
-        const parsed: unknown = JSON.parse(text);
-        if (!Array.isArray(parsed) || parsed.length === 0) {
-          throw new Error('Expected a non-empty JSON array.');
-        }
-        payload = { items: parsed, concurrency: batchConcurrency };
-      } catch (reason) {
-        setBatchError(reason instanceof Error ? reason.message : String(reason));
-        return;
-      }
-    } else {
-      payload = { csv: text, concurrency: batchConcurrency };
-    }
-    setBatchBusy(true);
-    setBatchError('');
-    try {
-      await api.startBatch(job.id, payload);
-      setShowBatch(false);
-      setBatchText('');
-      await load();
-    } catch (reason) {
-      setBatchError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBatchBusy(false);
-    }
-  };
-
   const toggle = async () => {
     if (!job) return;
     setBusy('toggle');
     setError('');
     try {
       setJob(await api.setJobEnabled(job.id, !job.enabled));
+      onNotify?.(job.enabled ? 'Job paused.' : 'Job resumed.');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -196,17 +162,23 @@ export function JobDetailPage({
 
   const remove = async () => {
     if (!job) return;
-    if (!window.confirm(`Delete “${job.name}”? Its run history is kept.`)) return;
-    setBusy('delete');
-    setError('');
-    try {
-      await api.deleteJob(job.id);
-      onBack();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy('');
-    }
+    await confirmAction({
+      title: `Delete “${job.name}”?`,
+      body: 'The job stops scheduling. Its run history is kept.',
+      confirmLabel: 'Delete job',
+      onConfirm: async () => {
+        setBusy('delete');
+        setError('');
+        try {
+          await api.deleteJob(job.id);
+          onBack();
+        } catch (reason) {
+          return reason instanceof Error ? reason.message : String(reason);
+        } finally {
+          setBusy('');
+        }
+      },
+    });
   };
 
   const upgrade = async (version: number) => {
@@ -216,6 +188,7 @@ export function JobDetailPage({
     try {
       await api.upgradeJob(job.id, version);
       await load();
+      onNotify?.(`Job pinned to v${version}.`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -264,14 +237,8 @@ export function JobDetailPage({
         triggerConfig,
       });
       setJob(updated);
-      setName(updated.name);
-      setTriggerType(updated.triggerType || 'manual');
-      const updatedSchedule = String(updated.triggerConfig?.schedule ?? '0 9 * * *');
-      setSchedule(updatedSchedule);
-      setCronPreset(cronPresetFor(updatedSchedule));
-      setTimezone(String(updated.triggerConfig?.timezone ?? localTimezone()));
-      setRunAt(toDateTimeLocal(String(updated.triggerConfig?.runAt ?? '')));
-      setMaxConcurrency(String(updated.triggerConfig?.maxConcurrency ?? ''));
+      applyForm(updated);
+      dirtyRef.current = false;
       onDone();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -283,7 +250,7 @@ export function JobDetailPage({
   if (loading) {
     return (
       <main className="page-shell" id="main-stage" tabIndex={-1}>
-        <p className="muted pad">Loading job…</p>
+        <AssetLoadingState label="Loading job…" className="muted pad" />
       </main>
     );
   }
@@ -293,12 +260,13 @@ export function JobDetailPage({
       <main className="page-shell" id="main-stage" tabIndex={-1}>
         <header className="page-head">
           <div>
-            <p className="eyebrow">Job</p>
             <h1>Job not found</h1>
           </div>
           <button className="button subtle" onClick={onBack}>Back to jobs</button>
         </header>
-        {error && <p className="banner error">{error}</p>}
+        {error && (
+          <ActionError testId="job-detail-error">{error}</ActionError>
+        )}
       </main>
     );
   }
@@ -317,16 +285,25 @@ export function JobDetailPage({
       <header className="page-head job-detail-head">
         <div>
           <button className="breadcrumb-button" onClick={onBack}>← Jobs</button>
-          <p className="eyebrow">Job</p>
-          <h1>{job.name}</h1>
-          <p className="lede">
-            {job.templateName || job.templateId} · pinned to v{job.templateVersion} · {triggerLabel(job.triggerType)} trigger
-          </p>
+            <h1>{job.name}</h1>
+            <p className="lede meta-list">
+              <span>{job.templateName || job.templateId}</span>
+              <span>Pinned to v{job.templateVersion}</span>
+              <span>{triggerLabel(job.triggerType)} trigger</span>
+            </p>
         </div>
         <div className="job-actions">
           {editing ? (
             <>
-              <button className="button subtle" onClick={onDone} disabled={Boolean(busy)}>
+              <button
+                className="button subtle"
+                onClick={() => {
+                  dirtyRef.current = false;
+                  applyForm(job);
+                  onDone();
+                }}
+                disabled={Boolean(busy)}
+              >
                 Cancel
               </button>
               <button className="button primary" onClick={() => void save()} disabled={Boolean(busy)}>
@@ -335,28 +312,22 @@ export function JobDetailPage({
             </>
           ) : (
             <>
-              <button className="button subtle" onClick={() => void toggle()} disabled={Boolean(busy)}>
-                {job.enabled ? 'Pause' : 'Resume'}
-              </button>
               <button
                 className="button subtle"
-                onClick={() => {
-                  setBatchError('');
-                  setShowBatch(true);
-                }}
+                onClick={() => setShowBatch(true)}
                 disabled={Boolean(busy) || !job.enabled}
               >
                 Run batch
               </button>
-              <button className="button primary" onClick={() => void run()} disabled={Boolean(busy) || !job.enabled}>
-                {busy === 'run' ? 'Starting…' : 'Run now'}
-              </button>
-              <button className="button subtle" onClick={onEdit} disabled={Boolean(busy)}>
-                Edit settings
-              </button>
               <details className="action-menu">
                 <summary className="button subtle">More</summary>
                 <div className="action-menu-list">
+                  <button onClick={() => void toggle()} disabled={Boolean(busy)}>
+                    {job.enabled ? 'Pause' : 'Resume'}
+                  </button>
+                  <button onClick={onEdit} disabled={Boolean(busy)}>
+                    Edit settings
+                  </button>
                   <button onClick={() => void duplicate()} disabled={Boolean(busy)}>
                     Duplicate
                   </button>
@@ -365,12 +336,15 @@ export function JobDetailPage({
                   </button>
                 </div>
               </details>
+              <button className="button primary" onClick={() => void run()} disabled={Boolean(busy) || !job.enabled}>
+                {busy === 'run' ? 'Starting…' : 'Run now'}
+              </button>
             </>
           )}
         </div>
       </header>
 
-      {error && <p className="banner error">{error}</p>}
+      {error && <ActionError>{error}</ActionError>}
 
       <section className="job-summary-strip" aria-label="Job summary">
         <div>
@@ -396,333 +370,58 @@ export function JobDetailPage({
       </section>
 
       <div className="job-detail-grid">
-        <section className="dashboard-panel">
-          <header className="dashboard-panel-head">
-            <div>
-              <p className="eyebrow">Configuration</p>
-              <h2>Job settings</h2>
-            </div>
-            <span className={`job-state ${job.enabled ? '' : 'paused'}`}>
-              {job.enabled ? 'Active' : 'Paused'}
-            </span>
-          </header>
-          <div className="field-stack">
-            <label className="field" htmlFor="detail-job-name">
-              <span className="field-label">Name</span>
-              <input
-                id="detail-job-name"
-                className="text-input"
-                value={name}
-                disabled={!editing}
-                onChange={(event) => setName(event.target.value)}
-              />
-            </label>
-            <label className="field" htmlFor="detail-job-trigger">
-              <span className="field-label">Trigger</span>
-              <select
-                id="detail-job-trigger"
-                className="text-input"
-                value={triggerType}
-                disabled={!editing}
-                onChange={(event) => setTriggerType(event.target.value)}
-              >
-                <option value="manual">Manual</option>
-                <option value="cron">Schedule (cron)</option>
-                <option value="once">One time</option>
-              </select>
-            </label>
-            {triggerType === 'cron' && (
-              <>
-                <label className="field" htmlFor="detail-job-cron-preset">
-                  <span className="field-label">Schedule preset</span>
-                  <select
-                    id="detail-job-cron-preset"
-                    className="text-input"
-                    value={cronPreset}
-                    disabled={!editing}
-                    onChange={(event) => {
-                      const nextPreset = event.target.value;
-                      setCronPreset(nextPreset);
-                      const preset = CRON_PRESETS.find((item) => item.id === nextPreset);
-                      if (preset?.expression) setSchedule(preset.expression);
-                    }}
-                  >
-                    {CRON_PRESETS.map((preset) => (
-                      <option key={preset.id} value={preset.id}>{preset.label}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field" htmlFor="detail-job-schedule">
-                  <span className="field-label">Cron schedule</span>
-                  <input
-                    id="detail-job-schedule"
-                    className="text-input"
-                    value={schedule}
-                    disabled={!editing}
-                    onChange={(event) => {
-                      const value = event.target.value;
-                      setSchedule(value);
-                      setCronPreset(cronPresetFor(value));
-                    }}
-                    placeholder="0 9 * * *"
-                    spellCheck={false}
-                  />
-                  <span className="field-hint">
-                    Five fields: minute hour day-of-month month day-of-week. Use <code>*/10</code> for every 10 minutes.
-                  </span>
-                </label>
-                <label className="field" htmlFor="detail-job-timezone">
-                  <span className="field-label">Timezone</span>
-                  <input
-                    id="detail-job-timezone"
-                    className="text-input"
-                    list="detail-job-timezone-options"
-                    value={timezone}
-                    disabled={!editing}
-                    onChange={(event) => setTimezone(event.target.value)}
-                    placeholder="UTC"
-                    spellCheck={false}
-                  />
-                  <datalist id="detail-job-timezone-options">
-                    {COMMON_TIMEZONES.map((zone) => (
-                      <option key={zone} value={zone} />
-                    ))}
-                  </datalist>
-                </label>
-              </>
-            )}
-            {triggerType === 'once' && (
-              <label className="field" htmlFor="detail-job-run-at">
-                <span className="field-label">Run at</span>
-                <input
-                  id="detail-job-run-at"
-                  className="text-input"
-                  type="datetime-local"
-                  value={runAt}
-                  disabled={!editing}
-                  onChange={(event) => setRunAt(event.target.value)}
-                />
-              </label>
-            )}
-            <SchedulePreviewPanel triggerType={triggerType} config={previewConfig} />
-            <label className="field" htmlFor="detail-job-max-concurrency">
-              <span className="field-label">Max concurrency</span>
-              <input
-                id="detail-job-max-concurrency"
-                className="text-input"
-                type="number"
-                min={1}
-                value={maxConcurrency}
-                disabled={!editing}
-                onChange={(event) => setMaxConcurrency(event.target.value)}
-                placeholder="Engine default"
-              />
-            </label>
-            <label className="field" htmlFor="detail-job-input">
-              <span className="field-label">Input defaults (JSON)</span>
-              <textarea
-                id="detail-job-input"
-                className="text-input code-input"
-                value={inputText}
-                disabled={!editing}
-                onChange={(event) => setInputText(event.target.value)}
-                rows={8}
-                spellCheck={false}
-              />
-            </label>
-            <div className="job-inline-actions">
-              <span className="muted small">Trigger: {triggerLabel(job.triggerType)}</span>
-            </div>
-          </div>
-        </section>
+        <JobSettingsPanel
+          job={job}
+          editing={editing}
+          onDirty={() => {
+            dirtyRef.current = true;
+          }}
+          name={name}
+          triggerType={triggerType}
+          schedule={schedule}
+          cronPreset={cronPreset}
+          timezone={timezone}
+          runAt={runAt}
+          maxConcurrency={maxConcurrency}
+          inputText={inputText}
+          previewConfig={previewConfig}
+          onNameChange={setName}
+          onTriggerTypeChange={setTriggerType}
+          onScheduleChange={setSchedule}
+          onCronPresetChange={setCronPreset}
+          onTimezoneChange={setTimezone}
+          onRunAtChange={setRunAt}
+          onMaxConcurrencyChange={setMaxConcurrency}
+          onInputTextChange={setInputText}
+        />
 
-        <section className="dashboard-panel">
-          <header className="dashboard-panel-head">
-            <div>
-              <p className="eyebrow">Deployment</p>
-              <h2>Pinned version</h2>
-            </div>
-          </header>
-          <dl className="job-facts">
-            <div>
-              <dt>Template</dt>
-              <dd>
-                <button className="text-link" onClick={() => onOpenTemplate(job.templateId)}>
-                  {job.templateName || job.templateId}
-                </button>
-              </dd>
-            </div>
-            <div>
-              <dt>Version</dt>
-              <dd>v{job.templateVersion}</dd>
-            </div>
-            <div>
-              <dt>Last run</dt>
-              <dd>{job.lastRunAt ? formatTime(job.lastRunAt) : 'Never'}</dd>
-            </div>
-            <div>
-              <dt>Next run</dt>
-              <dd>{nextRunLabel(job)}</dd>
-            </div>
-            <div>
-              <dt>Created</dt>
-              <dd>{formatTime(job.createdAt)}</dd>
-            </div>
-          </dl>
-          {latest > job.templateVersion && (
-            <>
-              <button className="button subtle full" onClick={() => void upgrade(latest)} disabled={Boolean(busy)}>
-                Upgrade to v{latest}
-              </button>
-              {templateWorkflow && latestWorkflow && (
-                <WorkflowDiffBadges from={templateWorkflow} to={latestWorkflow} />
-              )}
-            </>
-          )}
-          {templateWorkflow && (
-            <div className="job-template-steps">
-              <div className="job-template-steps-head">
-                <h3>Template steps</h3>
-                <span className="muted small">
-                  {templateWorkflow.nodes.length} node{templateWorkflow.nodes.length === 1 ? '' : 's'}
-                </span>
-              </div>
-              <ol>
-                {templateWorkflow.nodes.map((node) => (
-                  <li key={node.id}>
-                    <span className="step-index" aria-hidden="true" />
-                    <span>
-                      <strong>{node.name || node.id}</strong>
-                      <em>{node.type}</em>
-                    </span>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          )}
-        </section>
+        <JobPinnedVersionPanel
+          job={job}
+          latest={latest}
+          templateWorkflow={templateWorkflow}
+          latestWorkflow={latestWorkflow}
+          busy={busy}
+          onOpenTemplate={onOpenTemplate}
+          onUpgrade={(version) => void upgrade(version)}
+        />
       </div>
 
-      <section className="dashboard-panel job-runs-panel">
-        <header className="dashboard-panel-head">
-          <div>
-            <p className="eyebrow">History</p>
-            <h2>Runs from this job</h2>
-          </div>
-          <span className="muted small">{runs.length} runs</span>
-        </header>
-        {runs.length === 0 ? (
-          <p className="muted small pad">No runs yet. Use Run now to create the first one.</p>
-        ) : (
-          <div className="runs-table" role="list">
-            {runs.map((item) =>
-              item.trigger === 'batch' ? (
-                <BatchRunRow
-                  key={item.id}
-                  run={item}
-                  onOpenRun={onOpenRun}
-                  onRetried={() => void load()}
-                />
-              ) : (
-                <button
-                  className="runs-row"
-                  key={item.id}
-                  role="listitem"
-                  onClick={() => onOpenRun(item.id)}
-                >
-                  <span className={`status-dot status-${item.status}`} aria-hidden="true" />
-                  <span className="runs-row-main">
-                    <strong>{item.status}</strong>
-                    <span>{formatTime(item.startedAt)} · v{item.templateVersion ?? job.templateVersion}</span>
-                  </span>
-                  <span className="runs-row-meta">
-                    <code>{item.id.split('_').pop()}</code>
-                    <em>{duration(item)}</em>
-                  </span>
-                </button>
-              ),
-            )}
-          </div>
-        )}
-      </section>
+      <JobRunsPanel
+        job={job}
+        runs={runs}
+        onOpenRun={onOpenRun}
+        onRetried={() => void load()}
+      />
 
       {showBatch && (
-        <div className="batch-modal-backdrop" role="presentation">
-          <section
-            className="batch-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="batch-modal-title"
-          >
-            <header className="batch-modal-head">
-              <div>
-                <p className="eyebrow">Batch</p>
-                <h2 id="batch-modal-title">Run {job.name} over many items</h2>
-              </div>
-              <button className="button subtle" onClick={() => setShowBatch(false)}>
-                Close
-              </button>
-            </header>
-            <p className="muted small">
-              Paste a JSON array of objects, or CSV with a header row. Each item runs as a child
-              run; job input defaults are merged into every item.
-            </p>
-            <label className="field" htmlFor="batch-file">
-              <span className="field-label">Upload JSON or CSV</span>
-              <input
-                id="batch-file"
-                className="text-input"
-                type="file"
-                accept=".json,.csv,application/json,text/csv"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (!file) return;
-                  file
-                    .text()
-                    .then((text) => {
-                      setBatchText(text);
-                      setBatchError('');
-                    })
-                    .catch((reason) => setBatchError(reason instanceof Error ? reason.message : String(reason)));
-                }}
-              />
-            </label>
-            <label className="field" htmlFor="batch-text">
-              <span className="field-label">Items</span>
-              <textarea
-                id="batch-text"
-                className="text-input code-input"
-                value={batchText}
-                onChange={(event) => setBatchText(event.target.value)}
-                rows={10}
-                spellCheck={false}
-                placeholder={'[{"name":"Ada"},{"name":"Grace"}]\n\nor\n\nname,city\nAda,London\nGrace,Paris'}
-              />
-            </label>
-            <label className="field batch-concurrency" htmlFor="batch-concurrency">
-              <span className="field-label">Concurrency</span>
-              <input
-                id="batch-concurrency"
-                className="text-input"
-                type="number"
-                min={1}
-                max={20}
-                value={batchConcurrency}
-                onChange={(event) => setBatchConcurrency(Number(event.target.value) || 1)}
-              />
-              <span className="muted small">At most 20 items run at once.</span>
-            </label>
-            {batchError && <p className="banner error">{batchError}</p>}
-            <footer className="batch-modal-actions">
-              <button className="button subtle" onClick={() => setShowBatch(false)}>
-                Cancel
-              </button>
-              <button className="button primary" onClick={() => void startBatch()} disabled={batchBusy}>
-                {batchBusy ? 'Starting…' : 'Start batch'}
-              </button>
-            </footer>
-          </section>
-        </div>
+        <BatchRunDialog
+          job={job}
+          onClose={() => setShowBatch(false)}
+          onStarted={async () => {
+            await load();
+            onNotify?.('Batch started.');
+          }}
+        />
       )}
     </main>
   );

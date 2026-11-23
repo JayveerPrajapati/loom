@@ -1,5 +1,8 @@
+import { AssetLoadingState } from '../assets/AssetState';
+import { ActionError } from '../assets/ActionError';
 import { useEffect, useState } from 'react';
 import { api } from '../../api';
+import { confirmAction } from '../../confirm';
 import type { Job, WorkflowSummary } from '../../types';
 import { formatTime, nextRunLabel, triggerLabel } from './shared';
 
@@ -7,11 +10,12 @@ interface JobsProps {
   summaries: WorkflowSummary[];
   onOpenJob: (id: string) => void;
   onCreateJob: () => void;
-  onOpenTemplates: () => void;
+  onOpenWorkflows: () => void;
   onOpenRun: (runId: string) => void;
+  onNotify?: (message: string, tone?: 'info' | 'error') => void;
 }
 
-export function JobsPage({ summaries, onOpenJob, onCreateJob, onOpenTemplates, onOpenRun }: JobsProps) {
+export function JobsPage({ summaries, onOpenJob, onCreateJob, onOpenWorkflows, onOpenRun, onNotify }: JobsProps) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
@@ -37,6 +41,7 @@ export function JobsPage({ summaries, onOpenJob, onCreateJob, onOpenTemplates, o
     setError('');
     try {
       const started = await api.runJob(job.id);
+      onNotify?.('Run started.');
       onOpenRun(started.runId);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -51,6 +56,7 @@ export function JobsPage({ summaries, onOpenJob, onCreateJob, onOpenTemplates, o
     try {
       const updated = await api.setJobEnabled(job.id, !job.enabled);
       setJobs((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      onNotify?.(updated.enabled ? 'Job resumed.' : 'Job paused.');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -64,6 +70,7 @@ export function JobsPage({ summaries, onOpenJob, onCreateJob, onOpenTemplates, o
     try {
       const updated = await api.upgradeJob(job.id, version);
       setJobs((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      onNotify?.(`Job pinned to v${updated.templateVersion}.`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -72,27 +79,33 @@ export function JobsPage({ summaries, onOpenJob, onCreateJob, onOpenTemplates, o
   };
 
   const remove = async (job: Job) => {
-    if (!window.confirm(`Delete “${job.name}”? Its run history is kept.`)) return;
-    setBusy(job.id);
-    setError('');
-    try {
-      await api.deleteJob(job.id);
-      setJobs((current) => current.filter((item) => item.id !== job.id));
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy('');
-    }
+    await confirmAction({
+      title: `Delete “${job.name}”?`,
+      body: 'The job stops scheduling. Its run history is kept.',
+      confirmLabel: 'Delete job',
+      onConfirm: async () => {
+        setBusy(job.id);
+        setError('');
+        try {
+          await api.deleteJob(job.id);
+          setJobs((current) => current.filter((item) => item.id !== job.id));
+          onNotify?.('Job deleted.');
+        } catch (reason) {
+          return reason instanceof Error ? reason.message : String(reason);
+        } finally {
+          setBusy('');
+        }
+      },
+    });
   };
 
   return (
     <main className="page-shell" id="main-stage" tabIndex={-1}>
       <header className="page-head">
         <div>
-          <p className="eyebrow">Instances</p>
           <h1>Jobs</h1>
           <p className="lede">
-            Jobs pin a published template version and keep running it until you upgrade them.
+            Jobs pin a published workflow version and keep running it until you upgrade them.
           </p>
         </div>
         {published.length > 0 && (
@@ -102,21 +115,23 @@ export function JobsPage({ summaries, onOpenJob, onCreateJob, onOpenTemplates, o
         )}
       </header>
 
-      {error && <p className="banner error">{error}</p>}
+      {error && (
+        <ActionError testId="jobs-error">{error}</ActionError>
+      )}
 
-      {published.length === 0 && (
+      {!error && published.length === 0 && (
         <div className="empty-panel">
-          <h2>No published templates yet</h2>
-          <p className="muted">Publish a template version before creating a job.</p>
-          <button className="button primary" onClick={onOpenTemplates}>Browse templates</button>
+          <h2>No published workflows yet</h2>
+          <p className="muted">Publish a workflow version before creating a job.</p>
+          <button className="button primary" onClick={onOpenWorkflows}>Browse workflows</button>
         </div>
       )}
 
-      {loading && <p className="muted small pad">Loading jobs…</p>}
-      {!loading && jobs.length === 0 && published.length > 0 && (
+      {loading && <AssetLoadingState label="Loading jobs…" />}
+      {!loading && !error && jobs.length === 0 && published.length > 0 && (
         <div className="empty-panel">
           <h2>No jobs yet</h2>
-          <p className="muted">Create a job to pin a published template version.</p>
+          <p className="muted">Create a job to pin a published workflow version.</p>
           <button className="button primary" onClick={onCreateJob}>Create job</button>
         </div>
       )}
@@ -126,15 +141,15 @@ export function JobsPage({ summaries, onOpenJob, onCreateJob, onOpenTemplates, o
             const template = summaries.find((summary) => summary.id === job.templateId);
             const latest = template?.publishedVersion ?? job.templateVersion;
             return (
-              <div className="job-row" key={job.id}>
-                <span className={`status-dot ${job.enabled ? 'status-done' : 'status-cancelled'}`} aria-hidden="true" />
-                <button className="runs-row-main job-row-main" onClick={() => onOpenJob(job.id)}>
+            <div className="job-row" key={job.id}>
+              <button className="runs-row-main job-row-main" onClick={() => onOpenJob(job.id)}>
                   <strong>{job.name}</strong>
                   <span>
-                    {job.templateName || job.templateId} · v{job.templateVersion} · {triggerLabel(job.triggerType)}
+                    {job.templateName || job.templateId}, v{job.templateVersion},{' '}
+                    {triggerLabel(job.triggerType)}
                   </span>
                   <span>
-                    {job.lastRunAt ? `Last run ${formatTime(job.lastRunAt)}` : 'Never run'} · Next run{' '}
+                    {job.lastRunAt ? `Last run ${formatTime(job.lastRunAt)}` : 'Never run'}. Next run{' '}
                     {nextRunLabel(job)}
                   </span>
                 </button>

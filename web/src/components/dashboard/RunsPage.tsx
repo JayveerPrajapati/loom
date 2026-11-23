@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../../api';
+import { usePagedList } from '../../usePagedList';
+import type { PageParams } from '../../paging';
 import type { Job, Run, WorkflowSummary } from '../../types';
+import { AssetErrorState, AssetFilteredEmptyState } from '../assets/AssetState';
 import { duration, formatTime } from './shared';
 
 interface RunsProps {
@@ -9,14 +12,10 @@ interface RunsProps {
 }
 
 export function RunsPage({ summaries, onOpenRun }: RunsProps) {
-  const [runs, setRuns] = useState<Run[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
   const [status, setStatus] = useState('all');
   const [trigger, setTrigger] = useState('all');
   const [jobFilter, setJobFilter] = useState('');
-  const [query, setQuery] = useState('');
   const [limit, setLimit] = useState(100);
   const [updatedAt, setUpdatedAt] = useState('');
   const names = useMemo(
@@ -32,18 +31,25 @@ export function RunsPage({ summaries, onOpenRun }: RunsProps) {
     [jobs],
   );
 
-  const load = (silent = false) => {
-    if (!silent) setLoading(true);
-    setError('');
-    api
-      .listAllRuns(limit, jobFilter || undefined)
-      .then((result) => {
-        setRuns(result.runs ?? []);
-        setUpdatedAt(new Date().toISOString());
-      })
-      .catch((err: Error) => setError(err.message))
-      .finally(() => setLoading(false));
-  };
+  const loadRuns = useCallback(
+    (params: PageParams) =>
+      api
+        .listRuns(null, params.limit ?? limit, {
+          q: params.q,
+          status: status === 'all' ? undefined : status,
+          trigger: trigger === 'all' ? undefined : trigger,
+          job: jobFilter || undefined,
+          roots: true,
+          cursor: params.cursor,
+        })
+        .then((result) => ({
+          items: result.runs ?? [],
+          count: result.count,
+          nextCursor: result.nextCursor,
+        })),
+    [jobFilter, limit, status, trigger],
+  );
+  const list = usePagedList<Run>(loadRuns, { limit });
 
   useEffect(() => {
     api
@@ -53,12 +59,12 @@ export function RunsPage({ summaries, onOpenRun }: RunsProps) {
   }, []);
 
   useEffect(() => {
-    load();
-  }, [jobFilter, limit]);
+    if (list.loaded) setUpdatedAt(new Date().toISOString());
+  }, [list.loaded, list.items]);
 
   useEffect(() => {
     const refresh = () => {
-      if (document.visibilityState === 'visible') load(true);
+      if (document.visibilityState === 'visible') list.reload();
     };
     const timer = window.setInterval(refresh, 5000);
     window.addEventListener('focus', refresh);
@@ -66,21 +72,12 @@ export function RunsPage({ summaries, onOpenRun }: RunsProps) {
       window.clearInterval(timer);
       window.removeEventListener('focus', refresh);
     };
-  }, [jobFilter, limit]);
+  }, [list.reload]);
 
-  const term = query.trim().toLowerCase();
-  const filtered = (status === 'all' ? runs : runs.filter((run) => run.status === status))
-    .filter((run) => trigger === 'all' || run.trigger === trigger)
-    .filter((run) => !run.parentRunId)
-    .filter((run) => {
-      if (!term) return true;
-      const workflow = names.get(run.workflowId) ?? '';
-      const job = run.jobId ? jobNames.get(run.jobId) ?? '' : '';
-      return [run.id, run.workflowId, workflow, job, run.trigger, run.status, run.error ?? '']
-        .some((value) => value.toLowerCase().includes(term));
-    });
-  const recentFailures = runs.filter((run) => {
-    if (run.status !== 'failed' || run.parentRunId) return false;
+  const filtersActive =
+    list.query.trim() !== '' || status !== 'all' || trigger !== 'all' || jobFilter !== '';
+  const recentFailures = list.items.filter((run) => {
+    if (run.status !== 'failed') return false;
     const started = Date.parse(run.startedAt);
     return Number.isFinite(started) && Date.now() - started < 24 * 60 * 60 * 1000;
   }).length;
@@ -89,11 +86,10 @@ export function RunsPage({ summaries, onOpenRun }: RunsProps) {
     <main className="page-shell" id="main-stage" tabIndex={-1}>
       <header className="page-head">
         <div>
-          <p className="eyebrow">Execution</p>
           <h1>Runs</h1>
           <p className="lede">The most recent executions across every template, newest first.</p>
         </div>
-        <button className="button subtle" onClick={() => load()} disabled={loading}>
+        <button className="button subtle" onClick={list.reload} disabled={list.loading}>
           Refresh
         </button>
       </header>
@@ -105,9 +101,9 @@ export function RunsPage({ summaries, onOpenRun }: RunsProps) {
             id="run-search"
             className="text-input"
             type="search"
-            value={query}
+            value={list.query}
             placeholder="Run id, workflow, job, error"
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => list.setQuery(event.target.value)}
           />
         </label>
         <label className="field inline-field" htmlFor="run-status">
@@ -120,6 +116,7 @@ export function RunsPage({ summaries, onOpenRun }: RunsProps) {
           >
             <option value="all">All statuses</option>
             <option value="running">Running</option>
+            <option value="queued">Queued</option>
             <option value="waiting">Waiting</option>
             <option value="done">Complete</option>
             <option value="failed">Failed</option>
@@ -158,7 +155,7 @@ export function RunsPage({ summaries, onOpenRun }: RunsProps) {
           </select>
         </label>
         <label className="field inline-field" htmlFor="run-limit">
-          <span className="field-label">Show</span>
+          <span className="field-label">Rows</span>
           <select
             id="run-limit"
             className="text-input"
@@ -171,63 +168,98 @@ export function RunsPage({ summaries, onOpenRun }: RunsProps) {
           </select>
         </label>
         <span className="page-toolbar-status">
-          <strong>{filtered.length} runs</strong>
+          <strong>
+            {list.loaded
+              ? `${list.count} run${list.count === 1 ? '' : 's'}`
+              : 'Loading runs…'}
+          </strong>
           <em>{updatedAt ? `Live · updated ${formatTime(updatedAt)}` : 'Live'}</em>
         </span>
       </div>
 
-      {error && <p className="banner error">{error}</p>}
-      {!loading && recentFailures > 0 && status !== 'failed' && (
+      {list.failure && <AssetErrorState failure={list.failure} onRetry={list.reload} />}
+      {list.loaded && recentFailures > 0 && status !== 'failed' && (
         <div className="run-alert" role="status">
           <span>
             <strong>{recentFailures}</strong> failed run{recentFailures === 1 ? '' : 's'} in the
-            last 24 hours.
+            loaded runs.
           </span>
           <button className="text-button" onClick={() => setStatus('failed')}>
             Review failures
           </button>
         </div>
       )}
-      {loading && (
+      {list.loading && !list.loaded && (
         <div className="skel-list" aria-busy="true" aria-label="Loading runs">
           {Array.from({ length: 6 }, (_, index) => (
             <div className="skel-row" key={index} />
           ))}
         </div>
       )}
-      {!loading && !error && filtered.length === 0 && (
-        <div className="empty-panel">
-          <h2>{runs.length === 0 ? 'No runs yet' : 'No matching runs'}</h2>
-          <p className="muted">
-            {runs.length === 0
-              ? 'Open a template and press Run to create the first run.'
-              : 'Try a different search or clear the filters.'}
-          </p>
-        </div>
-      )}
+      {!list.loading &&
+        !list.failure &&
+        list.loaded &&
+        list.count === 0 &&
+        (filtersActive ? (
+          <AssetFilteredEmptyState
+            title="No matching runs"
+            onClear={() => {
+              list.setQuery('');
+              setStatus('all');
+              setTrigger('all');
+              setJobFilter('');
+            }}
+          >
+            Try a different search or clear the filters.
+          </AssetFilteredEmptyState>
+        ) : (
+          <div className="empty-panel">
+            <h2>No runs yet</h2>
+            <p className="muted">Open a workflow and press Run to create the first run.</p>
+          </div>
+        ))}
 
-      {!loading && filtered.length > 0 && (
+      {!list.failure && list.items.length > 0 && (
         <div className="runs-table">
-          {filtered.map((run) => (
+          <div className="runs-row-head" aria-hidden="true">
+            <span className="runs-col-main">Workflow</span>
+            <span className="runs-col-id">Run</span>
+            <span className="runs-col-duration">Duration</span>
+          </div>
+          {list.items.map((run) => (
             <button
               className="runs-row"
               key={run.id}
               onClick={() => onOpenRun(run.id)}
             >
-              <span className={`status-dot status-${run.status}`} aria-hidden="true" />
               <span className="runs-row-main">
                 <strong>{names.get(run.workflowId) ?? run.workflowId}</strong>
-                <span>
-                  {run.status} · {run.trigger} · {formatTime(run.startedAt)}
-                  {run.jobId ? ` · ${jobNames.get(run.jobId) ?? run.jobId}` : ''}
+                <span className="meta-list">
+                  <span className={`status-text status-${run.status}`}>{run.status}</span>
+                  <span>{run.trigger}</span>
+                  <span>{formatTime(run.startedAt)}</span>
+                  {run.jobId && <span>{jobNames.get(run.jobId) ?? run.jobId}</span>}
                 </span>
               </span>
               <span className="runs-row-meta">
-                <code>{run.id.split('_').pop()}</code>
+                <code title={run.id}>{run.id.split('_').pop()}</code>
                 <em>{duration(run)}</em>
               </span>
             </button>
           ))}
+        </div>
+      )}
+      {!list.failure && list.hasMore && (
+        <div className="list-load-more">
+          <button
+            type="button"
+            className="button"
+            onClick={list.loadMore}
+            disabled={list.loadingMore}
+            data-testid="runs-load-more"
+          >
+            {list.loadingMore ? 'Loading more…' : 'Load more'}
+          </button>
         </div>
       )}
     </main>

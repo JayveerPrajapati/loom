@@ -10,30 +10,11 @@ export const PORT_COLORS: Record<PortType, string> = {
   any: '#8e8e93',
 };
 
-const NODE_NAMES: Record<string, string> = {
-  'trigger.manual': 'Manual trigger',
-  'trigger.webhook': 'Webhook',
-  'trigger.cron': 'Schedule',
-  'trigger.subflow': 'Subflow trigger',
-  'http.request': 'HTTP request',
-  'code.run': 'Code',
-  'data.set': 'Set data',
-  'flow.if': 'If',
-  'flow.switch': 'Switch',
-  'flow.merge': 'Merge',
-  'flow.loop': 'Loop',
-  'flow.wait': 'Wait',
-  'flow.approval': 'Approval',
-  'flow.subflow': 'Subflow',
-  'db.postgres': 'Postgres',
-  'chat.slack': 'Slack',
-  'data.json.parse': 'Parse JSON',
-  'data.csv.parse': 'Parse CSV',
-  'text.template': 'Text template',
-};
-
+// Display names come from the backend catalog (Definition.DisplayName,
+// unique per type — TestCatalogDisplayNames guards that); the raw type is
+// only a last-resort fallback for a server that predates the field.
 export function defaultNodeName(def: NodeDef): string {
-  return NODE_NAMES[def.type] ?? def.type;
+  return def.displayName || def.type;
 }
 
 export function nodeDefMap(defs: NodeDef[]): Record<string, NodeDef> {
@@ -61,57 +42,10 @@ export function portCompatibility(
 }
 
 export function defaultsFor(def: NodeDef): Record<string, unknown> {
-  switch (def.type) {
-    case 'trigger.manual':
-      return {};
-    case 'trigger.webhook':
-      return { path: 'webhook', method: 'POST' };
-    case 'trigger.cron':
-      return { schedule: '0 9 * * *', timezone: 'UTC' };
-    case 'trigger.subflow':
-      return {};
-    case 'http.request':
-      return {
-        method: 'GET',
-        url: 'https://api.example.com',
-        auth: 'none',
-        bodyType: 'none',
-        successCodes: '2xx',
-        failOnError: false,
-      };
-    case 'code.run':
-      return { language: 'javascript', source: 'return $json;' };
-    case 'data.set':
-      return { values: { field: 'value' }, keepOnlySet: true };
-    case 'flow.if':
-      return { condition: '{{ $json.ok === true }}' };
-    case 'flow.switch':
-      return {
-        cases: ["{{ $json.type === 'a' }}", "{{ $json.type === 'b' }}", "{{ $json.type === 'c' }}"],
-      };
-    case 'flow.merge':
-      return { mode: 'append' };
-    case 'flow.loop':
-      return { workflowId: '', itemsPath: '', maxIterations: 100 };
-    case 'flow.wait':
-      return { seconds: 5 };
-    case 'flow.approval':
-      return { message: 'Approve this run?' };
-    case 'flow.subflow':
-      return { workflowId: '', wait: true };
-    case 'db.postgres':
-      return { operation: 'query', query: 'select 1 as ok' };
-    case 'chat.slack':
-      return { channel: '#general', text: 'Hello from Loom' };
-    case 'data.json.parse':
-      return { text: '{{ $json.text }}' };
-    case 'data.csv.parse':
-      return { text: '{{ $json.text }}' };
-    case 'text.template':
-      return { template: 'Hello {{ $json.name }}' };
-    default:
-      return {};
-  }
+  return Object.fromEntries(
+    Object.entries(def.config ?? {}).filter(([, spec]) => spec.default !== undefined)
+      .map(([key, spec]) => [key, spec.default]),
+  );
 }
 
 export function edgeId(edge: WorkflowEdge): string {
@@ -152,7 +86,7 @@ export function nextPosition(nodes: WorkflowNode[]): { x: number; y: number } {
 
 export function makeNode(def: NodeDef, nodes: WorkflowNode[], id?: string): WorkflowNode {
   const nodeId = id ?? uniqueNodeId(def.type, nodes);
-  const config = defaultsFor(def);
+  const config: Record<string, unknown> = {};
   if (def.type === 'trigger.webhook') config.path = `webhook-${nodeId}`;
   return {
     id: nodeId,
@@ -162,6 +96,7 @@ export function makeNode(def: NodeDef, nodes: WorkflowNode[], id?: string): Work
     position: nextPosition(nodes),
     config,
     credentials: {},
+    profileOverrides: {},
   };
 }
 

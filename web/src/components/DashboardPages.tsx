@@ -1,6 +1,7 @@
 export { HomePage } from './dashboard/HomePage';
 export { TemplatesPage } from './dashboard/TemplatesPage';
 export { RunsPage } from './dashboard/RunsPage';
+export { TasksPage } from './dashboard/TasksPage';
 export { JobsPage } from './dashboard/JobsPage';
 export { CreateJobPage } from './dashboard/CreateJobPage';
 export { JobDetailPage } from './dashboard/JobDetailPage';

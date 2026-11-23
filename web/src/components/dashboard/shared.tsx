@@ -1,3 +1,5 @@
+import { AssetLoadingState } from '../assets/AssetState';
+import { ActionError } from '../assets/ActionError';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../../api';
 import type {
@@ -28,7 +30,11 @@ export function formatDurationText(ms: number): string {
 }
 
 export function duration(run: Run): string {
-  if (!run.finishedAt) return '—';
+  // Meaningful values for every state: a dash only when the duration is
+  // genuinely unavailable (finished without a usable timestamp).
+  if (run.status === 'waiting') return 'Waiting';
+  if (run.status === 'queued') return 'Not started';
+  if (!run.finishedAt) return run.status === 'running' ? 'Running' : '—';
   const ms = Date.parse(run.finishedAt) - Date.parse(run.startedAt);
   if (!Number.isFinite(ms) || ms < 0) return '—';
   return formatDurationText(ms);
@@ -307,13 +313,15 @@ export function BatchRunRow({ run, onOpenRun, onRetried }: BatchRunRowProps) {
   return (
     <div className="batch-run" role="listitem">
       <div className="batch-run-head">
-        <span className={`status-dot status-${status}`} aria-hidden="true" />
         <span className="runs-row-main">
-          <strong>Batch · {status}</strong>
-          <span>
-            {formatTime(run.startedAt)} · {children.length} items · {done} done
-            {failed > 0 ? ` · ${failed} failed` : ''}
-            {active > 0 ? ` · ${active} active` : ''}
+          <strong>Batch run</strong>
+          <span className="meta-list">
+            <span>{status}</span>
+            <span>{formatTime(run.startedAt)}</span>
+            <span>{children.length} items</span>
+            <span>{done} done</span>
+            {failed > 0 && <span>{failed} failed</span>}
+            {active > 0 && <span>{active} active</span>}
           </span>
         </span>
         <span className="runs-row-meta">
@@ -323,22 +331,21 @@ export function BatchRunRow({ run, onOpenRun, onRetried }: BatchRunRowProps) {
       </div>
       <div className="batch-progress" aria-label={`Batch progress ${progress}%`}>
         <div className="batch-progress-track">
-          <span style={{ width: `${progress}%` }} />
+          <span style={{ transform: `scaleX(${progress / 100})` }} />
         </div>
         <span className="muted small">{progress}%</span>
       </div>
-      {error && <p className="banner error">{error}</p>}
-      {loading && <p className="muted small pad">Loading batch items…</p>}
+      {error && <ActionError>{error}</ActionError>}
+      {loading && <AssetLoadingState label="Loading batch items…" />}
       {!loading && children.length > 0 && (
         <div className="batch-children">
           {children.map((child) => (
             <button className="batch-child" key={child.id} onClick={() => onOpenRun(child.id)}>
-              <span className={`status-dot status-${child.status}`} aria-hidden="true" />
               <span>
                 <strong>{batchItemLabel(child.parentNodeId)}</strong>
                 <em>
                   {child.status}
-                  {child.error ? ` · ${child.error}` : ''}
+                  {child.error ? `: ${child.error}` : ''}
                 </em>
               </span>
               <code>{child.id.split('_').pop()}</code>

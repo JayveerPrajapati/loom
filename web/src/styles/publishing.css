@@ -1,0 +1,377 @@
+/* Publishing and versions */
+
+/* Audit 3D: the editor's primary-action cluster — Run, Publish, More.
+   The border separates it from the secondary cluster (undo/redo/Save). */
+.publish-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding-left: var(--space-10);
+  border-left: 1px solid var(--line);
+}
+
+/* Audit 4E: the live publish-progress indicator renders inside this slot
+   beside the button. */
+.publish-slot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  min-width: 0;
+}
+
+/* Audit 4E: one short, quiet line naming the running publish phase. It
+   truncates instead of pushing Run/Publish/More out of the bar. */
+.publish-phase {
+  max-width: 12rem;
+  margin-top: 2px;
+  overflow: hidden;
+  font-size: var(--text-xs);
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* .egress-chip shares the version-chip look (operational-trust
+   campaign) but keeps its own class so strict .version-chip
+   locators in specs keep resolving to exactly one element. */
+.version-chip,
+.egress-chip {
+  height: 28px;
+  padding: 0 var(--space-10);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-weight: 620;
+  cursor: pointer;
+}
+
+.version-chip.draft {
+  border-color: color-mix(in srgb, var(--amber) 45%, transparent);
+  background: var(--amber-soft);
+  color: var(--text);
+}
+
+.version-dialog {
+  width: min(780px, 100%);
+  max-height: min(680px, calc(100vh - var(--space-48)));
+  display: flex;
+  flex-direction: column;
+}
+
+.version-body {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  min-height: 260px;
+  overflow: hidden;
+}
+
+.version-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-height: 480px;
+  overflow: auto;
+  padding: var(--space-10);
+  border-right: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
+.version-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-10) var(--space-10);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.version-row:hover {
+  background: var(--panel);
+}
+
+.version-row.selected {
+  border-color: var(--line-strong);
+  background: var(--panel);
+  box-shadow: var(--shadow-soft);
+}
+
+.version-row strong {
+  font-size: var(--text-sm);
+}
+
+.version-row span {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.version-row em {
+  color: var(--green);
+  font-size: var(--text-xs);
+  font-style: normal;
+  font-weight: 650;
+}
+
+.version-detail {
+  min-width: 0;
+  overflow: auto;
+  padding: var(--space-16);
+}
+
+.version-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  margin-bottom: var(--space-14);
+}
+
+.version-summary span {
+  padding: var(--space-4) var(--space-8);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.version-diff {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-14);
+}
+
+.version-diff strong {
+  display: block;
+  margin-bottom: var(--space-6);
+  font-size: var(--text-xs);
+}
+
+.version-diff ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.version-diff li {
+  padding: var(--space-6) var(--space-8);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+}
+
+.version-diff code {
+  margin-left: var(--space-6);
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.version-dialog .dialog-actions {
+  border-top: 1px solid var(--line);
+  padding-top: var(--space-12);
+}
+
+.version-dialog .dialog-actions span {
+  margin-right: auto;
+}
+
+.version-verify {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-10);
+  margin-top: var(--space-16);
+  padding-top: var(--space-14);
+  border-top: 1px solid var(--line);
+}
+
+.version-verify .banner {
+  max-width: none;
+  margin: 0;
+}
+
+.verify-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+  width: 100%;
+}
+
+.verify-verdict {
+  margin: 0;
+  padding: var(--space-10) var(--space-12);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.verify-verdict.passed {
+  border: 1px solid color-mix(in srgb, var(--green) 25%, transparent);
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.verify-verdict.failed {
+  border: 1px solid color-mix(in srgb, var(--red) 25%, transparent);
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.verify-nodes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: 100%;
+}
+
+.verify-node {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8) var(--space-12);
+  padding: var(--space-8) var(--space-10);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.verify-node-name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.verify-node-name strong {
+  font-size: var(--text-sm);
+}
+
+.verify-node-name code {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.verify-chip {
+  margin-left: auto;
+  padding: var(--space-2) var(--space-8);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-xs);
+  font-weight: 650;
+}
+
+.verify-chip.match {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.verify-chip.drift {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.verify-chip.added {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.verify-chip.removed {
+  background: var(--panel-2);
+  color: var(--muted);
+}
+
+.verify-chip.blocked {
+  border: 1px dashed var(--line-strong);
+  background: var(--panel-2);
+  color: var(--faint);
+}
+
+.verify-hashes {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.verify-hashes code {
+  word-break: break-all;
+}
+
+.verify-note {
+  flex-basis: 100%;
+  color: var(--faint);
+  font-size: var(--text-xs);
+}
+
+.verify-node-notes {
+  display: flex;
+  flex-basis: 100%;
+  flex-direction: column;
+  gap: var(--space-2);
+  color: var(--amber);
+  font-size: var(--text-xs);
+}
+
+@media (max-width: 720px) {
+  /* Primary actions (Run, Publish) stay visible on a phone; the topbar
+     wraps instead of hiding them. Audit 3D zone stacking: brand + Menu
+     + Settings on the first row, the workflow identity and the action
+     zones full-width below it. */
+
+  .topbar {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 56px;
+    row-gap: var(--space-6);
+    padding: var(--space-6) var(--space-12);
+  }
+
+  /* The app-level Settings menu joins the first row, right-aligned. */
+  .topbar > .settings-menu {
+    order: 1;
+    margin-left: auto;
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .topbar-heading,
+  .topbar-actions {
+    order: 2;
+    flex: 1 1 100%;
+  }
+
+  .topbar-heading {
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .topbar-actions {
+    flex-wrap: wrap;
+    row-gap: var(--space-6);
+  }
+
+  /* The primary cluster drops its desktop divider and takes the end
+     of its wrapped row, mirroring the desktop hierarchy. */
+  .publish-controls {
+    margin-left: auto;
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .version-body {
+    grid-template-columns: 1fr;
+  }
+
+  .version-list {
+    max-height: 180px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+}
+

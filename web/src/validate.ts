@@ -1,5 +1,16 @@
-import { outputType } from './catalog';
-import type { NodeDef, PortType, ValidationIssue, Workflow, WorkflowEdge } from './types';
+import type { Mapping } from './types';
+import { defaultsFor, outputType } from './catalog';
+import { validateEgressEntry } from './egress';
+import { bundleSchemaRefs, injectBundleRefs, mergeProfileConfig } from './paramRows';
+import type {
+  ConfigProfile,
+  DataSchema,
+  NodeDef,
+  PortType,
+  ValidationIssue,
+  Workflow,
+  WorkflowEdge,
+} from './types';
 
 function compatible(source: PortType, target: PortType): { ok: boolean; warning?: string } {
   if (source === 'any' || target === 'any') return { ok: true };
@@ -26,17 +37,53 @@ function fieldMatches(value: unknown, type: string): boolean {
   }
 }
 
-export function validateWorkflow(workflow: Workflow, defs: Record<string, NodeDef>): ValidationIssue[] {
+export function validateWorkflow(
+  workflow: Workflow,
+  defs: Record<string, NodeDef>,
+  profiles: Record<string, ConfigProfile> = {},
+  schemas: Record<string, DataSchema> = {},
+  mappings: Record<string, Mapping> = {},
+): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
-  const error = (code: string, message: string, node?: string, edge?: WorkflowEdge) =>
-    issues.push({ severity: 'error', code, message, node, edge });
-  const warning = (code: string, message: string, node?: string, edge?: WorkflowEdge) =>
-    issues.push({ severity: 'warning', code, message, node, edge });
+  const error = (
+    code: string,
+    message: string,
+    node?: string,
+    edge?: WorkflowEdge,
+    field?: string,
+  ) => issues.push({ severity: 'error', code, message, node, edge, field });
+  const warning = (
+    code: string,
+    message: string,
+    node?: string,
+    edge?: WorkflowEdge,
+    field?: string,
+  ) => issues.push({ severity: 'warning', code, message, node, edge, field });
 
   if (!workflow.id.trim()) error('missing_id', 'Workflow id is required');
   if (!workflow.name.trim()) error('missing_name', 'Workflow name is required');
   if (workflow.version < 1) error('invalid_version', 'Workflow version must be at least 1');
   if (workflow.nodes.length === 0) error('no_nodes', 'Workflow must contain at least one node');
+
+  // Egress allowlist entries must mirror the server's egress.ValidateEntry,
+  // so autosave skips an invalid doc and a manual save names the bad entry
+  // instead of the server 400 being swallowed silently.
+  const egressEntries = (workflow.egress?.allowlist as string[] | undefined) ?? [];
+  for (const entry of egressEntries) {
+    const problem = validateEgressEntry(entry);
+    if (problem) error('invalid_egress', problem);
+  }
+
+  // Workflow-level contracts (subflow surface): reference integrity like
+  // every other schema ref.
+  for (const [ref, label] of [
+    [workflow.inputSchemaRef, 'input'],
+    [workflow.outputSchemaRef, 'output'],
+  ] as const) {
+    if (ref && !schemas[ref]) {
+      error('missing_schema', `Workflow references missing ${label} data contract “${ref}”`);
+    }
+  }
 
   const byId = new Map<string, (typeof workflow.nodes)[number]>();
   for (const node of workflow.nodes) {
@@ -61,16 +108,81 @@ export function validateWorkflow(workflow: Workflow, defs: Record<string, NodeDe
     }
     if (!node.name.trim()) warning('missing_node_name', 'Node has no display name', node.id);
 
-    const config = node.config ?? {};
+    // Configuration Hub: a node with a profile carries required config via
+    // its profile, so validation runs against the resolved (profile +
+    // override) config — the same contract the server enforces at save and
+    // publish (plan §18 D2). Parameter-group rows merge per row name
+    // (v4.1 E4), exactly like the server's ResolveProfileRefs.
+    const profile = node.profileRef ? profiles[node.profileRef] : undefined;
+    if (node.profileRef && !profile) {
+      error('missing_profile', `Node references missing config profile “${node.profileRef}”`, node.id, undefined, 'profileRef');
+    }
+    if (profile && profile.nodeType !== node.type) {
+      error(
+        'missing_profile',
+        `Node type “${node.type}” cannot use profile “${node.profileRef}” (for “${profile.nodeType}”)`,
+        node.id,
+        undefined,
+        'profileRef',
+      );
+    }
+    const config = mergeProfileConfig(profile?.config, node.config ?? {}, node.profileOverrides);
+    for (const [key, value] of Object.entries(defaultsFor(def))) {
+      if (!Object.prototype.hasOwnProperty.call(config, key)) config[key] = value;
+    }
+    // Phase 1 P0-2: bundle references fill the node's empty slots — the
+    // effective refs are what the server validates at save and publish.
+    const bundleRefs = injectBundleRefs(profile?.bundle, node.type, node.config ?? {});
+    // Data contracts: a dangling schema reference is a named error, the
+    // same reference integrity the server enforces at save and publish.
+    const effectiveSchemas = bundleSchemaRefs(profile?.bundle, node);
+    for (const [ref, label] of [
+      [effectiveSchemas.input, 'input'],
+      [effectiveSchemas.output, 'output'],
+    ] as const) {
+      if (ref && !schemas[ref]) {
+        error('missing_schema', `Node references missing ${label} data contract “${ref}”`, node.id, undefined, `${label}SchemaRef`);
+      }
+    }
+    // Mappings: a data.map node's mappingRef must resolve (reference
+    // integrity, the same contract the server enforces at save and publish).
+    if (node.type === 'data.map') {
+      const ref = typeof bundleRefs.mappingRef === 'string' ? bundleRefs.mappingRef : '';
+      if (!ref) {
+        error('missing_mapping', 'data.map requires a mapping', node.id, undefined, 'mappingRef');
+      } else if (!mappings[ref]) {
+        error('missing_mapping', `Node references missing mapping “${ref}”`, node.id, undefined, 'mappingRef');
+      }
+    }
+    // http.request parameter groups: every effective mapping ref — the
+    // node's own or the bundle-injected one — must resolve with a
+    // kind match.
+    for (const [group, rawRef] of Object.entries(
+      (bundleRefs.mappingRefs ?? {}) as Record<string, unknown>,
+    )) {
+      if (typeof rawRef !== 'string' || !rawRef) continue;
+      const mapping = mappings[rawRef];
+      if (!mapping) {
+        error('missing_mapping', `Node references missing mapping “${rawRef}”`, node.id, undefined, `mappingRefs.${group}`);
+      } else if (mapping.kind && mapping.kind !== group) {
+        error(
+          'missing_mapping',
+          `Mapping “${mapping.name}” is kind ${mapping.kind} but slot “${group}” needs ${group}`,
+          node.id,
+          undefined,
+          `mappingRefs.${group}`,
+        );
+      }
+    }
     for (const [key, spec] of Object.entries(def.config ?? {})) {
       const present = Object.prototype.hasOwnProperty.call(config, key);
       if (!present) {
-        if (spec.required) error('missing_config', `${def.type} requires config “${key}”`, node.id);
+        if (spec.required) error('missing_config', `${def.type} requires config “${key}”`, node.id, undefined, key);
         continue;
       }
       const value = config[key];
       if (!fieldMatches(value, spec.type)) {
-        error('invalid_config', `Config “${key}” must be a ${spec.type}`, node.id);
+        error('invalid_config', `Config “${key}” must be a ${spec.type}`, node.id, undefined, key);
         continue;
       }
       if (spec.enum && !spec.enum.includes(String(value))) {
@@ -78,23 +190,25 @@ export function validateWorkflow(workflow: Workflow, defs: Record<string, NodeDe
           'invalid_config',
           `Config “${key}” must be one of ${spec.enum.join(', ')}; got “${String(value)}”`,
           node.id,
+          undefined,
+          key,
         );
       }
     }
     for (const key of Object.keys(config)) {
       if (def.config && !(key in def.config)) {
-        error('unknown_config', `${def.type} has no config field “${key}”`, node.id);
+        error('unknown_config', `${def.type} has no config field “${key}”`, node.id, undefined, key);
       }
     }
     for (const credential of def.credentials ?? []) {
       if ((def.optionalCredentials ?? []).includes(credential)) continue;
       if (!node.credentials?.[credential]?.trim()) {
-        error('missing_credential', `${def.type} requires a “${credential}” credential`, node.id);
+        error('missing_credential', `${def.type} requires a “${credential}” credential`, node.id, undefined, `credential:${credential}`);
       }
     }
     for (const key of Object.keys(node.credentials ?? {})) {
       if (!(def.credentials ?? []).includes(key) && !(def.optionalCredentials ?? []).includes(key)) {
-        warning('unknown_credential', `${def.type} does not use credential “${key}”`, node.id);
+        warning('unknown_credential', `${def.type} does not use credential “${key}”`, node.id, undefined, `credential:${key}`);
       }
     }
   }
